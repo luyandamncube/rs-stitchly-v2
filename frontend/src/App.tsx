@@ -12,7 +12,7 @@ import {
     type OnSelectionChangeParams,
 } from '@xyflow/react';
 import type { ConnectionType } from './canvas/connection-types';
-import { Moon, Sun } from 'lucide-react';
+import { FolderOpen, Moon, Sun } from 'lucide-react';
 import EditorTabs from './workflow-ui/EditorTabs';
 import EditorHeader, { type Job } from './workflow-ui/EditorHeader';
 import EngineSelector, { type EngineId } from './workflow-ui/EngineSelector';
@@ -335,6 +335,29 @@ export default function App() {
         setWorkspacePath(path);
         setWorkspacePathState(path);
     }, []);
+
+    const handleSwitchWorkspace = useCallback(async () => {
+        if (!isInTauri()) return;
+        const { pickWorkspaceDirectory } = await import('./workspace');
+        const picked = await pickWorkspaceDirectory();
+        if (!picked || picked === workspacePathState) return;
+        // Reset state so loadWorkspace effect re-hydrates from the new
+        // folder. We don't clear the existing state until we know the
+        // new path is set, to avoid a flash of empty canvas.
+        setWorkspaceReady(false);
+        setPipelineData(INITIAL_PIPELINE_DATA);
+        setRepo(INITIAL_REPO);
+        setJobs(INITIAL_JOBS);
+        setActiveJobId('j1');
+        setWorkspacePath(picked);
+        setWorkspacePathState(picked);
+    }, [workspacePathState]);
+
+    const workspaceFolderName = useMemo(() => {
+        if (!workspacePathState) return null;
+        const parts = workspacePathState.split(/[\\/]/).filter(Boolean);
+        return parts[parts.length - 1] ?? workspacePathState;
+    }, [workspacePathState]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1163,6 +1186,17 @@ export default function App() {
                 <div className="topbar-sep" aria-hidden="true" />
                 <EngineSelector value={engine} onChange={setEngine} />
                 <div className="topbar-spacer" />
+                {workspaceFolderName ? (
+                    <button
+                        type="button"
+                        className="topbar-workspace"
+                        onClick={handleSwitchWorkspace}
+                        title={`Workspace: ${workspacePathState}\nClick to switch`}
+                    >
+                        <FolderOpen size={12} />
+                        <span className="topbar-workspace-name">{workspaceFolderName}</span>
+                    </button>
+                ) : null}
                 <button
                     type="button"
                     className="topbar-theme-toggle"

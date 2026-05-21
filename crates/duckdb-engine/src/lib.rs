@@ -11,7 +11,7 @@
 //! it in Rust.
 
 use async_trait::async_trait;
-use duckdb::Connection;
+use duckdb::{Connection, InterruptHandle};
 use duckle_metadata::{Column, DataType};
 use duckle_plugin_sdk::{Inspection, InspectError};
 use serde::{Deserialize, Serialize};
@@ -49,10 +49,17 @@ const PREVIEW_LIMIT: usize = 8;
 
 /// Source-format / target-system dispatcher used by the autodetect Tauri
 /// command. New formats only need a new arm here.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DuckdbEngine {
     conn: Arc<Mutex<Connection>>,
     cancel: Arc<AtomicBool>,
+    interrupt: Arc<InterruptHandle>,
+}
+
+impl std::fmt::Debug for DuckdbEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DuckdbEngine").finish_non_exhaustive()
+    }
 }
 
 impl DuckdbEngine {
@@ -64,17 +71,24 @@ impl DuckdbEngine {
         // Best-effort: load extensions we use lazily.
         let _ = conn.execute_batch("INSTALL sqlite; LOAD sqlite;");
         let _ = conn.execute_batch("INSTALL json; LOAD json;");
+        let interrupt = conn.interrupt_handle();
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             cancel: Arc::new(AtomicBool::new(false)),
+            interrupt,
         })
     }
 
-    /// Request that any in-flight pipeline run halts at the next stage
-    /// boundary. Single-stage queries can't be interrupted mid-flight
-    /// in this build; they finish before we honor the flag.
+    /// Request that any in-flight pipeline run halts. Two layers:
+    ///   1. Sets the cancel flag so the run loop bails before starting
+    ///      another stage.
+    ///   2. Calls `InterruptHandle::interrupt()` — this is the
+    ///      thread-safe, lock-free interrupt path. It signals DuckDB
+    ///      to abort whatever the connection is currently executing,
+    ///      so even a long-running query returns ~immediately.
     pub fn request_cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+        self.interrupt.interrupt();
     }
 
     /// Clear a pending cancel — done at the start of every new run.
