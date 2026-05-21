@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import {
     addEdge,
@@ -31,10 +31,15 @@ import { RunStatusContext } from './canvas/run-status-context';
 import { validatePipeline } from './validation';
 import WorkspacePickerModal from './workflow-ui/WorkspacePickerModal';
 import {
+    deleteItemPayload,
+    deletePipelineFile,
     getWorkspacePath,
     isInTauri,
     loadWorkspace,
-    saveWorkspace,
+    saveItemPayload,
+    saveMetadata,
+    savePipelineFile,
+    saveRepository,
     setWorkspacePath,
 } from './workspace';
 import LeftSidebar from './workflow-ui/LeftSidebar';
@@ -230,31 +235,92 @@ export default function App() {
         };
     }, [workspacePathState]);
 
-    // Tauri: save to disk (debounced). Browser: save to localStorage.
+    // Granular Tauri saves — each slice goes to its own file so the
+    // workspace folder is git-friendly. Browser still uses localStorage.
+    const prevPipelineDataRef = useRef<Record<string, PipelineState> | null>(null);
+    const prevRepoRef = useRef<RepoItem[] | null>(null);
+
+    useEffect(() => {
+        if (!workspaceReady || !isInTauri() || !workspacePathState) return;
+        const ws = workspacePathState;
+        const t = setTimeout(() => {
+            void saveMetadata(ws, { engine, jobs, activeJobId });
+        }, 200);
+        return () => clearTimeout(t);
+    }, [workspaceReady, workspacePathState, engine, jobs, activeJobId]);
+
+    useEffect(() => {
+        if (!workspaceReady || !isInTauri() || !workspacePathState) return;
+        const ws = workspacePathState;
+        const t = setTimeout(() => {
+            void (async () => {
+                await saveRepository(ws, repo as unknown as Array<Record<string, unknown>>);
+                // Diff payload-bearing items against the previous snapshot
+                // so we only write the ones that actually changed.
+                const prev = prevRepoRef.current ?? [];
+                const prevById = new Map(prev.map(i => [i.id, i]));
+                const currById = new Map(repo.map(i => [i.id, i]));
+                for (const item of repo) {
+                    if (
+                        item.type === 'folder' ||
+                        item.type === 'project' ||
+                        item.type === 'pipeline'
+                    )
+                        continue;
+                    const before = prevById.get(item.id);
+                    if (!before || before.payload !== item.payload) {
+                        if (item.payload !== undefined) {
+                            await saveItemPayload(ws, item.type, item.id, item.payload);
+                        }
+                    }
+                }
+                // Delete payloads for items that were removed.
+                for (const before of prev) {
+                    if (currById.has(before.id)) continue;
+                    if (before.type === 'pipeline') {
+                        await deletePipelineFile(ws, before.id);
+                    } else if (
+                        before.type !== 'folder' &&
+                        before.type !== 'project'
+                    ) {
+                        await deleteItemPayload(ws, before.type, before.id);
+                    }
+                }
+                prevRepoRef.current = repo;
+            })();
+        }, 300);
+        return () => clearTimeout(t);
+    }, [workspaceReady, workspacePathState, repo]);
+
+    useEffect(() => {
+        if (!workspaceReady || !isInTauri() || !workspacePathState) return;
+        const ws = workspacePathState;
+        const t = setTimeout(() => {
+            void (async () => {
+                const prev = prevPipelineDataRef.current ?? {};
+                for (const [id, state] of Object.entries(pipelineData)) {
+                    if (prev[id] !== state) {
+                        await savePipelineFile(ws, id, state);
+                    }
+                }
+                prevPipelineDataRef.current = pipelineData;
+            })();
+        }, 400);
+        return () => clearTimeout(t);
+    }, [workspaceReady, workspacePathState, pipelineData]);
+
+    // Browser fallback: localStorage (unchanged).
     useEffect(() => {
         if (!workspaceReady) return;
-        if (isInTauri() && workspacePathState) {
-            const t = setTimeout(() => {
-                void saveWorkspace(workspacePathState, {
-                    version: 1,
-                    engine,
-                    pipelineData: pipelineData as unknown as Record<string, unknown>,
-                    repo: repo as unknown[],
-                    jobs: jobs as unknown[],
-                    activeJobId,
-                });
-            }, 500);
-            return () => clearTimeout(t);
-        } else {
-            const t = setTimeout(() => {
-                savePersisted('pipelines', pipelineData);
-                savePersisted('repo', repo);
-                savePersisted('jobs', jobs);
-                savePersisted('active-job', activeJobId);
-                savePersisted('engine', engine);
-            }, 250);
-            return () => clearTimeout(t);
-        }
+        if (isInTauri() && workspacePathState) return;
+        const t = setTimeout(() => {
+            savePersisted('pipelines', pipelineData);
+            savePersisted('repo', repo);
+            savePersisted('jobs', jobs);
+            savePersisted('active-job', activeJobId);
+            savePersisted('engine', engine);
+        }, 250);
+        return () => clearTimeout(t);
     }, [
         workspaceReady,
         workspacePathState,
