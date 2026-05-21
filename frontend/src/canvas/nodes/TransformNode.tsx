@@ -1,15 +1,11 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import type { DuckleNodeData } from '../../pipeline-types';
 
-export type TransformNodeData = {
-    label: string;
-    subtitle?: string;
-};
+type TransformNodeType = Node<DuckleNodeData, 'transform'>;
 
-export type TransformNodeType = Node<TransformNodeData, 'transform'>;
-
-export default function TransformNode({ data }: NodeProps<TransformNodeType>) {
+export default function TransformNode({ data, selected }: NodeProps<TransformNodeType>) {
     return (
-        <div className="node node-transform">
+        <div className={'node node-transform' + (selected ? ' is-selected' : '')}>
             <div className="node-kind">transform</div>
             <div className="node-label">{data.label}</div>
             {data.subtitle ? <div className="node-subtitle">{data.subtitle}</div> : null}

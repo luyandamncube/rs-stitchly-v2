@@ -1,8 +1,17 @@
 import { useState } from 'react';
+import type {
+    Connection,
+    Edge,
+    EdgeChange,
+    Node,
+    NodeChange,
+    OnSelectionChangeParams,
+} from '@xyflow/react';
 import Canvas from '../canvas/Canvas';
 import PlanView from './PlanView';
 import RunView from './RunView';
 import type { EngineId } from './EngineSelector';
+import type { DuckleNodeData } from '../pipeline-types';
 
 type TabId = 'canvas' | 'plan' | 'run';
 
@@ -14,9 +23,23 @@ const TABS: { id: TabId; label: string }[] = [
 
 type Props = {
     engine: EngineId;
+    nodes: Node<DuckleNodeData>[];
+    edges: Edge[];
+    onNodesChange: (changes: NodeChange[]) => void;
+    onEdgesChange: (changes: EdgeChange[]) => void;
+    onConnect: (connection: Connection) => void;
+    onSelectionChange: (params: OnSelectionChangeParams) => void;
 };
 
-export default function EditorTabs({ engine }: Props) {
+export default function EditorTabs({
+    engine,
+    nodes,
+    edges,
+    onNodesChange,
+    onEdgesChange,
+    onConnect,
+    onSelectionChange,
+}: Props) {
     const [active, setActive] = useState<TabId>('canvas');
 
     return (
@@ -37,7 +60,14 @@ export default function EditorTabs({ engine }: Props) {
             </div>
             <div className="tab-content">
                 <div className={'tab-panel' + (active === 'canvas' ? ' tab-panel-active' : '')}>
-                    <Canvas />
+                    <Canvas
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        onConnect={onConnect}
+                        onSelectionChange={onSelectionChange}
+                    />
                 </div>
                 <div className={'tab-panel' + (active === 'plan' ? ' tab-panel-active' : '')}>
                     <PlanView engine={engine} />

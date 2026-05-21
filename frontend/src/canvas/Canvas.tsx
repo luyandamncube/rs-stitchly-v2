@@ -1,21 +1,21 @@
-import { useCallback } from 'react';
 import {
     ReactFlow,
     ReactFlowProvider,
     Background,
     Controls,
     MiniMap,
-    addEdge,
-    useEdgesState,
-    useNodesState,
     type Connection,
     type Edge,
+    type EdgeChange,
     type Node,
+    type NodeChange,
+    type OnSelectionChangeParams,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import SourceNode from './nodes/SourceNode';
 import TransformNode from './nodes/TransformNode';
 import SinkNode from './nodes/SinkNode';
+import type { DuckleNodeData } from '../pipeline-types';
 
 const nodeTypes = {
     source: SourceNode,
@@ -23,41 +23,23 @@ const nodeTypes = {
     sink: SinkNode,
 };
 
-const initialNodes: Node[] = [
-    {
-        id: 's1',
-        type: 'source',
-        position: { x: 60, y: 140 },
-        data: { label: 'CSV', subtitle: 'orders.csv' },
-    },
-    {
-        id: 't1',
-        type: 'transform',
-        position: { x: 340, y: 140 },
-        data: { label: 'Filter', subtitle: 'status = "paid"' },
-    },
-    {
-        id: 'k1',
-        type: 'sink',
-        position: { x: 620, y: 140 },
-        data: { label: 'Parquet', subtitle: 'orders_paid.parquet' },
-    },
-];
+type Props = {
+    nodes: Node<DuckleNodeData>[];
+    edges: Edge[];
+    onNodesChange: (changes: NodeChange[]) => void;
+    onEdgesChange: (changes: EdgeChange[]) => void;
+    onConnect: (connection: Connection) => void;
+    onSelectionChange: (params: OnSelectionChangeParams) => void;
+};
 
-const initialEdges: Edge[] = [
-    { id: 'e1', source: 's1', target: 't1' },
-    { id: 'e2', source: 't1', target: 'k1' },
-];
-
-function CanvasInner() {
-    const [nodes, , onNodesChange] = useNodesState(initialNodes);
-    const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-
-    const onConnect = useCallback(
-        (connection: Connection) => setEdges(eds => addEdge(connection, eds)),
-        [setEdges],
-    );
-
+function CanvasInner({
+    nodes,
+    edges,
+    onNodesChange,
+    onEdgesChange,
+    onConnect,
+    onSelectionChange,
+}: Props) {
     return (
         <ReactFlow
             nodes={nodes}
@@ -65,6 +47,7 @@ function CanvasInner() {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            onSelectionChange={onSelectionChange}
             nodeTypes={nodeTypes}
             fitView
             colorMode="dark"
@@ -76,10 +59,10 @@ function CanvasInner() {
     );
 }
 
-export default function Canvas() {
+export default function Canvas(props: Props) {
     return (
         <ReactFlowProvider>
-            <CanvasInner />
+            <CanvasInner {...props} />
         </ReactFlowProvider>
     );
 }
