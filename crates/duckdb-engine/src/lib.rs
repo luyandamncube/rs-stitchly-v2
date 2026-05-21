@@ -130,14 +130,23 @@ impl DuckdbEngine {
     /// Cloud / HTTP URL inspector. Routes by the URL's file extension
     /// to the matching DuckDB reader. Installs the right extensions
     /// lazily (azure needs the azure extension; gcs/s3 work through
-    /// httpfs). Credentials come from environment variables for now
-    /// (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for s3, etc.);
-    /// CREATE SECRET integration with saved connections lands later.
+    /// httpfs). If the request options include credentials (placed
+    /// there by frontend connection auto-fill), they are wired into a
+    /// DuckDB SECRET before the inspect runs; otherwise the engine
+    /// falls back to environment variables.
     fn inspect_cloud_url(
         &self,
         format: &str,
         options: JsonValue,
     ) -> Result<Inspection, EngineError> {
+        // Apply credentials if present.
+        if let Some(stmt) = secret_statement(format, "duckle_inspect", &options) {
+            self.with_connection(|conn| {
+                if let Err(e) = conn.execute_batch(&stmt) {
+                    tracing::warn!("CREATE SECRET failed (inspect): {}", e);
+                }
+            });
+        }
         #[derive(Debug, Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Opts {
@@ -479,6 +488,89 @@ pub(crate) fn sql_escape(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+/// Build a `CREATE OR REPLACE SECRET` statement for a cloud format if
+/// the options carry credentials. `secret_name` is used to make
+/// per-source secrets so different connections in the same pipeline
+/// don't trample each other.
+pub(crate) fn secret_statement(
+    format: &str,
+    secret_name: &str,
+    options: &JsonValue,
+) -> Option<String> {
+    let get = |k: &str| options.get(k).and_then(JsonValue::as_str);
+    let sane = secret_name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect::<String>();
+    match format {
+        "s3" => {
+            let key = get("accessKey")?;
+            let sec = get("secretKey")?;
+            let region = get("region").unwrap_or("us-east-1");
+            let session = get("sessionToken");
+            let mut parts = vec![
+                "TYPE S3".to_string(),
+                format!("KEY_ID '{}'", sql_escape(key)),
+                format!("SECRET '{}'", sql_escape(sec)),
+                format!("REGION '{}'", sql_escape(region)),
+            ];
+            if let Some(s) = session {
+                parts.push(format!("SESSION_TOKEN '{}'", sql_escape(s)));
+            }
+            Some(format!(
+                "CREATE OR REPLACE SECRET secret_{} ({});",
+                sane,
+                parts.join(", ")
+            ))
+        }
+        "gcs" => {
+            let key = get("accessKey")?;
+            let sec = get("secretKey")?;
+            Some(format!(
+                "CREATE OR REPLACE SECRET secret_{} (TYPE GCS, KEY_ID '{}', SECRET '{}');",
+                sane,
+                sql_escape(key),
+                sql_escape(sec)
+            ))
+        }
+        "azureblob" => {
+            let account = get("accountName")?;
+            let key = get("accountKey")?;
+            Some(format!(
+                "CREATE OR REPLACE SECRET secret_{} (TYPE AZURE, CONNECTION_STRING 'DefaultEndpointsProtocol=https;AccountName={};AccountKey={};EndpointSuffix=core.windows.net');",
+                sane,
+                sql_escape(account),
+                sql_escape(key)
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Walk the pipeline doc and produce CREATE SECRET statements for
+/// every cloud source/sink that has its credentials populated.
+pub(crate) fn collect_pipeline_secrets(doc: &PipelineDoc) -> Vec<String> {
+    let mut out = Vec::new();
+    for node in &doc.nodes {
+        let id = match node.data.component_id.as_deref() {
+            Some(s) => s,
+            None => continue,
+        };
+        let format = match id {
+            "src.s3" | "snk.s3" => "s3",
+            "src.gcs" | "snk.gcs" => "gcs",
+            "src.azureblob" | "snk.azureblob" => "azureblob",
+            _ => continue,
+        };
+        if let Some(props) = node.data.properties.as_ref() {
+            if let Some(stmt) = secret_statement(format, &node.id, props) {
+                out.push(stmt);
+            }
+        }
+    }
+    out
+}
+
 // ---- Pipeline execution ------------------------------------------------
 
 /// Streaming events emitted while a pipeline runs. Tauri's `Channel`
@@ -615,6 +707,19 @@ impl DuckdbEngine {
         on_event(PipelineEvent::Started {
             total_stages: compiled.stages.len() as u32,
         });
+
+        // Wire any cloud credentials before stages run. Failures here
+        // are non-fatal — DuckDB will fall back to env vars / IMDS.
+        let secret_stmts = collect_pipeline_secrets(doc);
+        if !secret_stmts.is_empty() {
+            self.with_connection(|conn| {
+                for stmt in &secret_stmts {
+                    if let Err(e) = conn.execute_batch(stmt) {
+                        tracing::warn!("CREATE SECRET failed: {}", e);
+                    }
+                }
+            });
+        }
 
         let mut nodes: std::collections::BTreeMap<String, NodeRunStatus> = Default::default();
         let mut overall_error: Option<String> = None;
