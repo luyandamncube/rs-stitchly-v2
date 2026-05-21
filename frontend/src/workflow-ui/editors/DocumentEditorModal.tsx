@@ -143,7 +143,37 @@ export default function DocumentEditorModal({ item, onSave, onCancel }: Props) {
                         </div>
                     ) : (
                         <div className="markdown-body">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+                            <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                components={{
+                                    img: ({ src, alt, title }) => (
+                                        <img
+                                            src={src}
+                                            alt={alt ?? ''}
+                                            title={title}
+                                            loading="lazy"
+                                            referrerPolicy="no-referrer"
+                                            onError={e => {
+                                                (
+                                                    e.currentTarget as HTMLImageElement
+                                                ).style.display = 'none';
+                                            }}
+                                        />
+                                    ),
+                                    a: ({ href, children, title }) => (
+                                        <a
+                                            href={href}
+                                            title={title}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                        >
+                                            {children}
+                                        </a>
+                                    ),
+                                }}
+                            >
+                                {content}
+                            </ReactMarkdown>
                         </div>
                     )}
                 </div>

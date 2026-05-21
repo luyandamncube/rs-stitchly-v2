@@ -4335,3 +4335,177 @@ select.schema-input {
         ),
         var(--bg-0);
 }
+
+/* Light mode visual tweaks for elements with hardcoded rgba */
+:root[data-theme='light'] .node {
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.5), transparent 60%),
+        var(--bg-elevated);
+}
+
+:root[data-theme='light'] .node.is-selected {
+    box-shadow:
+        0 0 0 1px var(--accent),
+        0 0 20px rgba(79, 95, 229, 0.18),
+        var(--shadow-1);
+}
+
+:root[data-theme='light'] .topbar::after {
+    background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(79, 95, 229, 0.35),
+        rgba(6, 182, 212, 0.28),
+        transparent
+    );
+}
+
+:root[data-theme='light'] .brand-mark {
+    box-shadow:
+        0 0 0 1px rgba(6, 182, 212, 0.5) inset,
+        0 2px 8px rgba(79, 95, 229, 0.25);
+    color: white;
+}
+
+:root[data-theme='light'] .properties-mapper-button {
+    color: white;
+    box-shadow: 0 4px 12px rgba(79, 95, 229, 0.25);
+}
+
+:root[data-theme='light'] .btn-primary {
+    color: white;
+}
+
+:root[data-theme='light'] .react-flow__background {
+    color: rgba(11, 15, 26, 0.08);
+}
+
+:root[data-theme='light'] .edge-label {
+    background: var(--bg-elevated);
+    color: var(--text-2);
+    box-shadow: 0 1px 4px rgba(11, 15, 26, 0.08);
+}
+
+:root[data-theme='light'] .edge-label.is-selected {
+    color: var(--text-1);
+}
+
+:root[data-theme='light'] .toolbar-run {
+    background: rgba(22, 163, 74, 0.12);
+    border-color: rgba(22, 163, 74, 0.3);
+    color: var(--success);
+}
+
+:root[data-theme='light'] .toolbar-stop {
+    background: rgba(220, 38, 38, 0.12);
+    border-color: rgba(220, 38, 38, 0.3);
+    color: var(--danger);
+}
+
+:root[data-theme='light'] .validation-ok {
+    background: rgba(22, 163, 74, 0.1);
+    color: var(--success);
+    border-color: rgba(22, 163, 74, 0.25);
+}
+
+:root[data-theme='light'] .schema-source-banner {
+    background: rgba(79, 95, 229, 0.08);
+    color: var(--accent);
+    border-color: rgba(79, 95, 229, 0.25);
+}
+
+:root[data-theme='light'] .schema-source-banner-declared {
+    background: rgba(22, 163, 74, 0.08);
+    color: var(--success);
+    border-color: rgba(22, 163, 74, 0.25);
+}
+
+:root[data-theme='light'] .field-warning {
+    background: rgba(217, 119, 6, 0.08);
+    border-color: rgba(217, 119, 6, 0.3);
+}
+
+:root[data-theme='light'] .modal-input-browse:hover {
+    color: white;
+}
+
+:root[data-theme='light'] .schema-autodetect-button {
+    color: white;
+}
+
+:root[data-theme='light'] .mapper-input-port-name {
+    background: rgba(79, 95, 229, 0.1);
+}
+
+:root[data-theme='light'] .edge-label-reject .edge-label-badge {
+    background: rgba(220, 38, 38, 0.12);
+}
+
+:root[data-theme='light'] .edge-label-lookup .edge-label-badge {
+    background: rgba(24, 160, 154, 0.14);
+}
+
+:root[data-theme='light'] .edge-label-on-subjob-ok .edge-label-badge,
+:root[data-theme='light'] .edge-label-on-component-ok .edge-label-badge {
+    background: rgba(22, 163, 74, 0.12);
+}
+
+:root[data-theme='light'] .edge-label-on-subjob-error .edge-label-badge,
+:root[data-theme='light'] .edge-label-on-component-error .edge-label-badge {
+    background: rgba(220, 38, 38, 0.12);
+}
+
+:root[data-theme='light'] .palette-availability-yes {
+    color: var(--success);
+}
+
+:root[data-theme='light'] .node-disabled-badge {
+    background: rgba(220, 38, 38, 0.12);
+    border-color: rgba(220, 38, 38, 0.3);
+    color: var(--danger);
+}
+
+:root[data-theme='light'] .mapper-input-col.is-used {
+    background: rgba(79, 95, 229, 0.08);
+}
+
+:root[data-theme='light'] .modal-tip {
+    background: rgba(79, 95, 229, 0.06);
+    border-color: rgba(79, 95, 229, 0.2);
+}
+
+:root[data-theme='light'] .markdown-body code {
+    color: var(--accent-cyan-strong);
+    background: rgba(8, 145, 178, 0.08);
+}
+
+:root[data-theme='light'] .markdown-body blockquote {
+    background: rgba(79, 95, 229, 0.06);
+}
+
+:root[data-theme='light'] .markdown-body img {
+    box-shadow: 0 1px 4px rgba(11, 15, 26, 0.1);
+}
+
+:root[data-theme='light'] .repo-node.is-active {
+    background: rgba(79, 95, 229, 0.1);
+    color: var(--accent);
+}
+
+:root[data-theme='light'] .filter-condition-prefix {
+    color: var(--accent);
+}
+
+:root[data-theme='light'] .filter-sql-preview-code {
+    color: var(--text-1);
+}
+
+:root[data-theme='light'] .ctx-secret-toggle {
+    color: var(--text-3);
+}
+
+:root[data-theme='light'] .topbar {
+    background:
+        linear-gradient(180deg, rgba(6, 182, 212, 0.04), transparent 60%),
+        var(--bg-1);
+}

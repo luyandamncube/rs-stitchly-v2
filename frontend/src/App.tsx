@@ -17,6 +17,7 @@ import EditorTabs from './workflow-ui/EditorTabs';
 import EditorHeader, { type Job } from './workflow-ui/EditorHeader';
 import EngineSelector, { type EngineId } from './workflow-ui/EngineSelector';
 import { useTheme } from './theme';
+import { loadPersisted, savePersisted } from './persistence';
 import LeftSidebar from './workflow-ui/LeftSidebar';
 import PropertiesPanel from './workflow-ui/PropertiesPanel';
 import BottomPanel from './workflow-ui/BottomPanel';
@@ -158,15 +159,20 @@ const EMPTY_PIPELINE: PipelineState = { nodes: [], edges: [] };
 export default function App() {
     const { theme, toggle: toggleTheme } = useTheme();
     const [runtime, setRuntime] = useState<RuntimeState>('connecting');
-    const [engine, setEngine] = useState<EngineId>('duckdb');
-    const [pipelineData, setPipelineData] =
-        useState<Record<string, PipelineState>>(INITIAL_PIPELINE_DATA);
+    const [engine, setEngine] = useState<EngineId>(() =>
+        loadPersisted<EngineId>('engine', 'duckdb'),
+    );
+    const [pipelineData, setPipelineData] = useState<Record<string, PipelineState>>(() =>
+        loadPersisted('pipelines', INITIAL_PIPELINE_DATA),
+    );
     const [selectedId, setSelectedId] = useState<string | null>(null);
-    const [jobs, setJobs] = useState<Job[]>(INITIAL_JOBS);
-    const [activeJobId, setActiveJobId] = useState<string>('j1');
+    const [jobs, setJobs] = useState<Job[]>(() => loadPersisted('jobs', INITIAL_JOBS));
+    const [activeJobId, setActiveJobId] = useState<string>(() =>
+        loadPersisted('active-job', 'j1'),
+    );
     const [isRunning, setIsRunning] = useState<boolean>(false);
     const [renameRequest, setRenameRequest] = useState<number>(0);
-    const [repo, setRepo] = useState<RepoItem[]>(INITIAL_REPO);
+    const [repo, setRepo] = useState<RepoItem[]>(() => loadPersisted('repo', INITIAL_REPO));
     const [newPipelineModal, setNewPipelineModal] = useState<{
         open: boolean;
         defaultParent: string;
@@ -175,6 +181,30 @@ export default function App() {
     const activePipeline = pipelineData[activeJobId] ?? EMPTY_PIPELINE;
     const nodes = activePipeline.nodes;
     const edges = activePipeline.edges;
+
+    // Persist core state to localStorage (debounced).
+    useEffect(() => {
+        const t = setTimeout(() => savePersisted('pipelines', pipelineData), 250);
+        return () => clearTimeout(t);
+    }, [pipelineData]);
+
+    useEffect(() => {
+        const t = setTimeout(() => savePersisted('repo', repo), 250);
+        return () => clearTimeout(t);
+    }, [repo]);
+
+    useEffect(() => {
+        const t = setTimeout(() => savePersisted('jobs', jobs), 250);
+        return () => clearTimeout(t);
+    }, [jobs]);
+
+    useEffect(() => {
+        savePersisted('active-job', activeJobId);
+    }, [activeJobId]);
+
+    useEffect(() => {
+        savePersisted('engine', engine);
+    }, [engine]);
 
     useEffect(() => {
         let cancelled = false;
