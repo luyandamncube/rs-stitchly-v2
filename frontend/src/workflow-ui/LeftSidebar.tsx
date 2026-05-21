@@ -39,7 +39,7 @@ export default function LeftSidebar({
     onDuplicateRepoItem,
     onDeleteRepoItem,
 }: Props) {
-    const [tab, setTab] = useState<SideTab>('project');
+    const [tab, setTab] = useState<SideTab>('palette');
 
     return (
         <aside className="left-sidebar">

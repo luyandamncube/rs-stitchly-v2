@@ -18,6 +18,7 @@ import EditorHeader, { type Job } from './workflow-ui/EditorHeader';
 import EngineSelector, { type EngineId } from './workflow-ui/EngineSelector';
 import { useTheme } from './theme';
 import { loadPersisted, savePersisted } from './persistence';
+import { resolveOutputSchema } from './schema-resolve';
 import LeftSidebar from './workflow-ui/LeftSidebar';
 import PropertiesPanel from './workflow-ui/PropertiesPanel';
 import BottomPanel from './workflow-ui/BottomPanel';
@@ -285,9 +286,48 @@ export default function App() {
                     es,
                 ),
             );
+
+            // Auto-populate the right-side key on join/lookup components
+            // when a lookup connection lands on them — picks up the
+            // first column of the lookup source's effective schema.
+            if (type === 'lookup' && connection.target && connection.source) {
+                const targetNode = nodes.find(n => n.id === connection.target);
+                const targetManifest = targetNode
+                    ? getManifest(targetNode.data.componentId)
+                    : undefined;
+                const targetId = targetManifest?.id ?? '';
+                const isJoinFamily =
+                    targetId.startsWith('xf.join.') ||
+                    targetId === 'xf.lookup' ||
+                    targetId === 'xf.semi' ||
+                    targetId === 'xf.anti';
+                if (isJoinFamily && targetNode && !targetNode.data.properties?.rightKey) {
+                    const lookupSchema = resolveOutputSchema(connection.source, nodes, edges);
+                    const firstCol = lookupSchema[0]?.name;
+                    if (firstCol) {
+                        setNodes(ns =>
+                            ns.map(n =>
+                                n.id === connection.target
+                                    ? {
+                                          ...n,
+                                          data: {
+                                              ...n.data,
+                                              properties: {
+                                                  ...(n.data.properties ?? {}),
+                                                  rightKey: firstCol,
+                                              },
+                                          },
+                                      }
+                                    : n,
+                            ),
+                        );
+                    }
+                }
+            }
+
             markDirty();
         },
-        [setEdges, markDirty],
+        [nodes, edges, setNodes, setEdges, markDirty],
     );
 
     const handleEdgeChangeType = useCallback(

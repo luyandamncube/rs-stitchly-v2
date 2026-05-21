@@ -10,11 +10,18 @@ import {
 
 type Props = {
     position: { x: number; y: number };
+    allowedTypes?: Set<ConnectionType>;
     onPick: (type: ConnectionType) => void;
     onCancel: () => void;
 };
 
-export default function ConnectionTypePicker({ position, onPick, onCancel }: Props) {
+export default function ConnectionTypePicker({ position, allowedTypes, onPick, onCancel }: Props) {
+    const rowItems = allowedTypes
+        ? ROW_CONNECTIONS.filter(t => allowedTypes.has(t.id))
+        : ROW_CONNECTIONS;
+    const triggerItems = allowedTypes
+        ? TRIGGER_CONNECTIONS.filter(t => allowedTypes.has(t.id))
+        : TRIGGER_CONNECTIONS;
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === 'Escape') onCancel();
@@ -42,18 +49,22 @@ export default function ConnectionTypePicker({ position, onPick, onCancel }: Pro
                     <span>Choose connection type</span>
                     <span className="connection-picker-hint">Esc to cancel</span>
                 </div>
-                <PickerSection
-                    title="Row connections"
-                    subtitle="Carry tabular data between components"
-                    items={ROW_CONNECTIONS}
-                    onPick={onPick}
-                />
-                <PickerSection
-                    title="Trigger connections"
-                    subtitle="Control flow, no data — fires once when condition is met"
-                    items={TRIGGER_CONNECTIONS}
-                    onPick={onPick}
-                />
+                {rowItems.length > 0 ? (
+                    <PickerSection
+                        title="Row connections"
+                        subtitle="Carry tabular data between components"
+                        items={rowItems}
+                        onPick={onPick}
+                    />
+                ) : null}
+                {triggerItems.length > 0 ? (
+                    <PickerSection
+                        title="Trigger connections"
+                        subtitle="Control flow, no data — fires once when condition is met"
+                        items={triggerItems}
+                        onPick={onPick}
+                    />
+                ) : null}
             </div>
         </div>,
         document.body,

@@ -108,6 +108,7 @@ function CanvasInner({
     const mouseRef = useRef({ x: 0, y: 0 });
     const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
     const [pickerPos, setPickerPos] = useState<{ x: number; y: number } | null>(null);
+    const [pickerAllowed, setPickerAllowed] = useState<Set<ConnectionType> | null>(null);
 
     const onMouseMove = useCallback((e: React.MouseEvent) => {
         mouseRef.current = { x: e.clientX, y: e.clientY };
@@ -120,23 +121,60 @@ function CanvasInner({
 
     const handleConnect = useCallback(
         (connection: Connection) => {
-            // If the source port is a specifically-typed output (reject,
-            // lookup, filter, iterate), auto-create the connection with
-            // that type — no picker. Only ambiguous 'main' outputs get
-            // the picker so the user can pick a row vs trigger type.
             const sourceNode = nodes.find(n => n.id === connection.source);
-            const manifest = sourceNode
+            const targetNode = nodes.find(n => n.id === connection.target);
+            const sourceManifest = sourceNode
                 ? getManifest(sourceNode.data.componentId)
                 : undefined;
-            const sourcePort = manifest?.ports?.outputs.find(
+            const targetManifest = targetNode
+                ? getManifest(targetNode.data.componentId)
+                : undefined;
+            const sourcePort = sourceManifest?.ports?.outputs.find(
                 p => p.id === connection.sourceHandle,
             );
+            const targetPort = targetManifest?.ports?.inputs.find(
+                p => p.id === connection.targetHandle,
+            );
+
+            // If the user dropped on a specifically-typed input port
+            // (lookup, iterate, reject), honor that — the connection
+            // type matches the port.
+            if (targetPort && targetPort.type !== 'main') {
+                onConnectWithType(connection, targetPort.type);
+                return;
+            }
+
+            // If the source port emits a specific row type, that wins
+            // (a reject output emits a reject row).
             const portType = sourcePort?.type;
             if (portType && portType !== 'main') {
                 onConnectWithType(connection, portType);
                 return;
             }
+
+            // Compute which connection types are available given the
+            // target's accepted input ports. Lookup is gated to
+            // components that declare a lookup input.
+            const acceptedInputTypes = new Set(
+                (targetManifest?.ports?.inputs ?? []).map(p => p.type),
+            );
+            const allowed = new Set<ConnectionType>();
+            allowed.add('main');
+            if (acceptedInputTypes.has('lookup')) allowed.add('lookup');
+            if (acceptedInputTypes.has('iterate')) allowed.add('iterate');
+            if (acceptedInputTypes.has('filter')) allowed.add('filter');
+            if (acceptedInputTypes.has('reject')) allowed.add('reject');
+            // Triggers are always available — they target a component as
+            // a whole, not a specific input port.
+            allowed.add('on-subjob-ok');
+            allowed.add('on-subjob-error');
+            allowed.add('on-component-ok');
+            allowed.add('on-component-error');
+            allowed.add('if');
+            allowed.add('run-if');
+
             setPendingConnection(connection);
+            setPickerAllowed(allowed);
             setPickerPos({ x: mouseRef.current.x, y: mouseRef.current.y });
         },
         [nodes, onConnectWithType],
@@ -149,6 +187,7 @@ function CanvasInner({
             }
             setPendingConnection(null);
             setPickerPos(null);
+            setPickerAllowed(null);
         },
         [pendingConnection, onConnectWithType],
     );
@@ -156,6 +195,7 @@ function CanvasInner({
     const handleCancelPick = useCallback(() => {
         setPendingConnection(null);
         setPickerPos(null);
+        setPickerAllowed(null);
     }, []);
 
     const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -374,6 +414,7 @@ function CanvasInner({
             {pickerPos ? (
                 <ConnectionTypePicker
                     position={pickerPos}
+                    allowedTypes={pickerAllowed ?? undefined}
                     onPick={handlePickType}
                     onCancel={handleCancelPick}
                 />
