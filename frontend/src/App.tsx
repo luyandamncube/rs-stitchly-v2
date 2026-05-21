@@ -12,9 +12,11 @@ import {
     type OnSelectionChangeParams,
 } from '@xyflow/react';
 import type { ConnectionType } from './canvas/connection-types';
+import { Moon, Sun } from 'lucide-react';
 import EditorTabs from './workflow-ui/EditorTabs';
 import EditorHeader, { type Job } from './workflow-ui/EditorHeader';
 import EngineSelector, { type EngineId } from './workflow-ui/EngineSelector';
+import { useTheme } from './theme';
 import LeftSidebar from './workflow-ui/LeftSidebar';
 import PropertiesPanel from './workflow-ui/PropertiesPanel';
 import BottomPanel from './workflow-ui/BottomPanel';
@@ -154,6 +156,7 @@ function seedTemplate(template: PipelineTemplate): PipelineState {
 const EMPTY_PIPELINE: PipelineState = { nodes: [], edges: [] };
 
 export default function App() {
+    const { theme, toggle: toggleTheme } = useTheme();
     const [runtime, setRuntime] = useState<RuntimeState>('connecting');
     const [engine, setEngine] = useState<EngineId>('duckdb');
     const [pipelineData, setPipelineData] =
@@ -788,6 +791,15 @@ export default function App() {
                 <div className="topbar-sep" aria-hidden="true" />
                 <EngineSelector value={engine} onChange={setEngine} />
                 <div className="topbar-spacer" />
+                <button
+                    type="button"
+                    className="topbar-theme-toggle"
+                    onClick={toggleTheme}
+                    title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                    aria-label="Toggle theme"
+                >
+                    {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+                </button>
                 <div className="status" data-state={runtime}>
                     <span className="status-dot" /> runtime: {runtime}
                 </div>
@@ -845,6 +857,7 @@ export default function App() {
                     selected={selectedNode}
                     allNodes={nodes}
                     edges={edges}
+                    repoItems={repo}
                     onUpdate={handleUpdateNode}
                     onOpenMapper={handleOpenMapper}
                     focusNameRequest={renameRequest}

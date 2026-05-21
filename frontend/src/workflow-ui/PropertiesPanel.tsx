@@ -3,6 +3,7 @@ import type { Edge, Node } from '@xyflow/react';
 import { CheckCircle2, MousePointer2, Workflow } from 'lucide-react';
 import { resolveUpstreamSchema, resolveUpstreamSampleRows } from '../schema-resolve';
 import type { Column, DuckleNodeData } from '../pipeline-types';
+import type { RepoItem } from '../repo-types';
 import SchemaEditor from './SchemaEditor';
 import FieldRenderer from './fields/FieldRenderer';
 import { FieldContext } from './fields/FieldContext';
@@ -26,6 +27,7 @@ type Props = {
     selected: Node<DuckleNodeData> | null;
     allNodes: Node<DuckleNodeData>[];
     edges: Edge[];
+    repoItems: RepoItem[];
     onUpdate: (id: string, patch: Partial<DuckleNodeData>) => void;
     onOpenMapper?: (nodeId: string) => void;
     focusNameRequest?: number;
@@ -35,6 +37,7 @@ export default function PropertiesPanel({
     selected,
     allNodes,
     edges,
+    repoItems,
     onUpdate,
     onOpenMapper,
     focusNameRequest,
@@ -158,7 +161,9 @@ export default function PropertiesPanel({
                 ))}
             </div>
 
-            <FieldContext.Provider value={{ upstreamSchema, nodeSchema: declaredSchema }}>
+            <FieldContext.Provider
+                value={{ upstreamSchema, nodeSchema: declaredSchema, repoItems }}
+            >
                 <div className="properties-content">
                     {tab === 'basic' ? (
                         <div className="properties-section">

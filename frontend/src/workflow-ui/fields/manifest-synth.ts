@@ -83,9 +83,8 @@ const credentialFields = (): Field[] => [
     {
         key: 'connectionRef',
         label: 'Or use saved connection',
-        kind: 'text',
-        placeholder: 'connection_name',
-        description: 'Reference a connection saved in the Connections folder.',
+        kind: 'connection-ref',
+        description: 'Pick a connection from the Connections folder.',
     },
 ];
 
@@ -649,8 +648,8 @@ function synthStorageSource(comp: ComponentDef): ComponentManifest {
                 {
                     key: 'connectionRef',
                     label: 'Or use saved connection',
-                    kind: 'text',
-                    placeholder: 'connection_name',
+                    kind: 'connection-ref',
+                    accepts: ['s3', 'gcs', 'azure-blob'],
                 },
             ],
         },
@@ -696,7 +695,8 @@ function synthStorageSink(comp: ComponentDef): ComponentManifest {
                     {
                         key: 'connectionRef',
                         label: 'Or use saved connection',
-                        kind: 'text',
+                        kind: 'connection-ref',
+                        accepts: ['s3', 'gcs', 'azure-blob'],
                     },
                 ],
             },
@@ -1735,6 +1735,12 @@ function synthCustomCode(comp: ComponentDef): ComponentManifest {
             {
                 label: 'SQL',
                 fields: [
+                    {
+                        key: 'routineRef',
+                        label: 'Use saved routine (optional)',
+                        kind: 'routine-ref',
+                        accepts: ['sql'],
+                    },
                     { key: 'sql', label: 'SQL', kind: 'expression', rows: 10, required: true, placeholder: 'SELECT *, status FROM input' },
                 ],
             },
@@ -1750,6 +1756,13 @@ function synthCustomCode(comp: ComponentDef): ComponentManifest {
         {
             label: 'Code',
             fields: [
+                {
+                    key: 'routineRef',
+                    label: 'Use saved routine (optional)',
+                    kind: 'routine-ref',
+                    accepts: [langDefault],
+                    description: 'Pick a saved routine, or write inline below.',
+                },
                 {
                     key: 'language',
                     label: 'Language',

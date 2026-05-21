@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Eye, FileText, Pencil, Save, X } from 'lucide-react';
+import Editor from 'react-simple-code-editor';
+import Prism from 'prismjs';
+import 'prismjs/components/prism-markdown';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { DocumentPayload, RepoItem } from '../../repo-types';
 
 type Props = {
@@ -26,6 +31,14 @@ How often does this run?
 ## Outputs
 
 - Sink: …
+
+## Code
+
+\`\`\`sql
+SELECT order_id, status, amount
+FROM orders
+WHERE status = 'paid';
+\`\`\`
 `;
 
 export default function DocumentEditorModal({ item, onSave, onCancel }: Props) {
@@ -116,14 +129,22 @@ export default function DocumentEditorModal({ item, onSave, onCancel }: Props) {
                     </div>
 
                     {mode === 'edit' ? (
-                        <textarea
-                            className="modal-input doc-editor"
-                            value={content}
-                            onChange={e => setContent(e.target.value)}
-                            spellCheck={false}
-                        />
+                        <div className="code-editor-host">
+                            <Editor
+                                value={content}
+                                onValueChange={setContent}
+                                highlight={code =>
+                                    Prism.highlight(code, Prism.languages.markdown, 'markdown')
+                                }
+                                padding={16}
+                                className="code-editor"
+                                textareaClassName="code-editor-textarea"
+                            />
+                        </div>
                     ) : (
-                        <pre className="doc-preview">{content}</pre>
+                        <div className="markdown-body">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+                        </div>
                     )}
                 </div>
 

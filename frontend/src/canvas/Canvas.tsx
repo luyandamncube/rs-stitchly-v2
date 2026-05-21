@@ -36,6 +36,7 @@ import type { DuckleNodeData } from '../pipeline-types';
 import type { ComponentDef } from '../workflow-ui/palette-data';
 import { useContextMenu, type MenuItem } from '../workflow-ui/ContextMenu';
 import { getManifest } from '../workflow-ui/fields/component-manifests';
+import { useTheme } from '../theme';
 
 const ICON_SIZE = 14;
 
@@ -54,6 +55,8 @@ const DEFAULT_EDGE_OPTIONS = {
 };
 
 const DELETE_KEYS = ['Delete', 'Backspace'];
+
+const PRO_OPTIONS = { hideAttribution: true };
 
 export type DropPosition = { x: number; y: number };
 
@@ -100,6 +103,7 @@ function CanvasInner({
     nodeAutodetectAvailable,
 }: Props) {
     const { screenToFlowPosition } = useReactFlow();
+    const { theme } = useTheme();
     const menu = useContextMenu();
     const mouseRef = useRef({ x: 0, y: 0 });
     const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
@@ -358,8 +362,9 @@ function CanvasInner({
                 edgeTypes={edgeTypes}
                 defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
                 deleteKeyCode={DELETE_KEYS}
+                proOptions={PRO_OPTIONS}
                 fitView
-                colorMode="dark"
+                colorMode={theme}
             >
                 <Background gap={16} />
                 <MiniMap pannable zoomable />

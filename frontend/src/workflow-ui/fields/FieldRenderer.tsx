@@ -13,6 +13,8 @@ import { ColumnField, ColumnsField } from './ColumnField';
 import { AggregationsField } from './AggregationsField';
 import { KeyValueField } from './KeyValueField';
 import { FilterBuilderField } from './FilterBuilderField';
+import { ConnectionRefField } from './ConnectionRefField';
+import { RoutineRefField } from './RoutineRefField';
 
 type Props = {
     field: Field;
@@ -97,6 +99,22 @@ function renderInput(field: Field, value: unknown, onChange: (v: unknown) => voi
             return (
                 <KeyValueField
                     value={value as { key: string; value: string }[] | undefined}
+                    onChange={onChange}
+                />
+            );
+        case 'connection-ref':
+            return (
+                <ConnectionRefField
+                    field={field}
+                    value={value as string | undefined}
+                    onChange={onChange}
+                />
+            );
+        case 'routine-ref':
+            return (
+                <RoutineRefField
+                    field={field}
+                    value={value as string | undefined}
                     onChange={onChange}
                 />
             );

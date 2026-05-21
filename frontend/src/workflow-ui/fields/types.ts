@@ -16,7 +16,9 @@ export type FieldKind =
     | 'column'
     | 'columns'
     | 'aggregations'
-    | 'key-value';
+    | 'key-value'
+    | 'connection-ref'
+    | 'routine-ref';
 
 export type SelectOption = { label: string; value: string };
 
@@ -32,6 +34,8 @@ export type Field = {
     filters?: FileFilter[];
     monospace?: boolean;
     rows?: number;
+    /** Filter connection-ref / routine-ref dropdowns to compatible items. */
+    accepts?: string[];
 };
 
 export type FormSection = {

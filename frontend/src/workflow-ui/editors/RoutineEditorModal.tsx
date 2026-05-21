@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Code2, Save, X } from 'lucide-react';
+import Editor from 'react-simple-code-editor';
+import Prism from 'prismjs';
+import 'prismjs/components/prism-python';
+import 'prismjs/components/prism-rust';
+import 'prismjs/components/prism-sql';
+import 'prismjs/components/prism-bash';
 import type { RepoItem, RoutineLanguage, RoutinePayload } from '../../repo-types';
 
 type Props = {
@@ -25,6 +31,22 @@ const TEMPLATES: Record<RoutineLanguage, string> = {
     bash: `#!/usr/bin/env bash\n# Reusable shell snippet.\n\necho "hello"\n`,
 };
 
+function prismLanguageFor(lang: RoutineLanguage): Prism.Grammar {
+    switch (lang) {
+        case 'python':
+            return Prism.languages.python ?? Prism.languages.clike;
+        case 'rust':
+            return Prism.languages.rust ?? Prism.languages.clike;
+        case 'sql':
+            return Prism.languages.sql ?? Prism.languages.clike;
+        case 'bash':
+            return Prism.languages.bash ?? Prism.languages.clike;
+        case 'javascript':
+        default:
+            return Prism.languages.javascript ?? Prism.languages.clike;
+    }
+}
+
 export default function RoutineEditorModal({ item, onSave, onCancel }: Props) {
     const initial = item?.payload as RoutinePayload | undefined;
     const [name, setName] = useState(item?.name ?? '');
@@ -43,7 +65,6 @@ export default function RoutineEditorModal({ item, onSave, onCancel }: Props) {
     }, [onCancel]);
 
     const handleLanguageChange = (next: RoutineLanguage) => {
-        // Only swap to template if the body is empty or matches a previous template.
         if (Object.values(TEMPLATES).includes(code) || code.trim() === '') {
             setCode(TEMPLATES[next]);
         }
@@ -135,12 +156,16 @@ export default function RoutineEditorModal({ item, onSave, onCancel }: Props) {
                         />
                     </div>
 
-                    <textarea
-                        className="modal-input doc-editor"
-                        value={code}
-                        onChange={e => setCode(e.target.value)}
-                        spellCheck={false}
-                    />
+                    <div className="code-editor-host">
+                        <Editor
+                            value={code}
+                            onValueChange={setCode}
+                            highlight={c => Prism.highlight(c, prismLanguageFor(language), language)}
+                            padding={16}
+                            className="code-editor"
+                            textareaClassName="code-editor-textarea"
+                        />
+                    </div>
                 </div>
 
                 <div className="modal-footer">
