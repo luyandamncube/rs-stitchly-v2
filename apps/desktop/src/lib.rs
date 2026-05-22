@@ -30,12 +30,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|_app| {
-            // Boot the scheduler now that we're inside the tokio runtime
-            // tauri spins up. It sits idle until set_workspace is called.
+            // Boot the scheduler. The `.setup` hook runs on the main
+            // thread, OUTSIDE any tokio runtime, so calling spawn_ticker
+            // (which uses tokio::spawn) directly here panics with
+            // "there is no reactor running". Hop onto Tauri's async
+            // runtime first — once we're inside that task, tokio::spawn
+            // resolves the ambient runtime correctly.
             if let Ok(eng) = engine() {
                 let s = Scheduler::new(eng);
-                s.spawn_ticker();
-                let _ = SCHEDULER.set(s);
+                let _ = SCHEDULER.set(s.clone());
+                tauri::async_runtime::spawn(async move {
+                    s.spawn_ticker();
+                });
             }
             Ok(())
         })
