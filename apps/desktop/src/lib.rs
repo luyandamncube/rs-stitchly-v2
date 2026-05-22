@@ -33,7 +33,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .setup(|_app| {
+        .setup(|app| {
             // Boot the scheduler. The `.setup` hook runs on the main
             // thread, OUTSIDE any tokio runtime, so calling spawn_ticker
             // (which uses tokio::spawn) directly here panics with
@@ -45,6 +45,17 @@ pub fn run() {
                 let _ = SCHEDULER.set(s.clone());
                 tauri::async_runtime::spawn(async move {
                     s.spawn_ticker();
+                });
+            }
+            // The window launches hidden (visible:false) so there's no
+            // white flash — the frontend calls show() once it has
+            // painted. Safety net: reveal it after a few seconds no
+            // matter what, so a frontend hiccup can't leave the window
+            // stuck invisible.
+            if let Some(win) = app.get_webview_window("main") {
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    let _ = win.show();
                 });
             }
             Ok(())
