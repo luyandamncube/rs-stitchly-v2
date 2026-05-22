@@ -72,7 +72,6 @@ const writeModeField = (): Field => ({
     defaultValue: 'overwrite',
     options: [
         { label: 'Overwrite', value: 'overwrite' },
-        { label: 'Append', value: 'append' },
         { label: 'Error if exists', value: 'error' },
     ],
 });

@@ -32,6 +32,10 @@ pub struct Stage {
     /// For sinks: the upstream object name they read from, so the
     /// executor can report a row count.
     pub from: Option<String>,
+    /// For sinks: the output path + write mode, so the executor can
+    /// enforce "error if exists" before writing.
+    pub sink_path: Option<String>,
+    pub sink_mode: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -300,10 +304,14 @@ fn build_stage(
         .as_ref()
         .cloned()
         .unwrap_or(JsonValue::Null);
+    let mut sink_path: Option<String> = None;
+    let mut sink_mode: Option<String> = None;
     let (sql, kind, from) = if component_id.starts_with("snk.") {
         let from_view = inputs
             .main()
             .ok_or_else(|| missing_input(node, "main"))?;
+        sink_path = string_prop(&props, "path").filter(|s| !s.is_empty());
+        sink_mode = string_prop(&props, "mode").filter(|s| !s.is_empty());
         (
             build_sink_sql(component_id, &props, from_view)?,
             StageKind::Sink,
@@ -341,6 +349,8 @@ fn build_stage(
         sql,
         kind,
         from,
+        sink_path,
+        sink_mode,
     })
 }
 
@@ -390,7 +400,7 @@ fn build_view_sql(
         // Output / Preview so you can inspect mid-pipeline (like tLogRow).
         "xf.log" => build_passthrough_op(inputs, "SELECT *"),
         "xf.project" => build_project(inputs, props),
-        "xf.distinct" => build_passthrough_op(inputs, "SELECT DISTINCT *"),
+        "xf.distinct" => build_distinct(inputs, props),
         "xf.limit" => build_limit(inputs, props),
         "xf.sort" => build_sort(inputs, props),
         "xf.agg" | "xf.groupby" => build_aggregate(inputs, props, GroupMode::Plain),
@@ -599,6 +609,21 @@ fn build_custom_sql(inputs: &NodeInputs, props: &JsonValue) -> Result<String, St
     })
 }
 
+fn build_distinct(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| "missing main input".to_string())?;
+    let cols = columns_list(props, "columns");
+    if cols.is_empty() {
+        Ok(format!("SELECT DISTINCT * FROM {}", quote_ident(upstream)))
+    } else {
+        let on = cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+        Ok(format!(
+            "SELECT DISTINCT ON ({}) * FROM {}",
+            on,
+            quote_ident(upstream)
+        ))
+    }
+}
+
 fn build_sort(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| "missing main input".to_string())?;
     let sort_keys: Vec<String> = props
@@ -623,6 +648,23 @@ fn build_sort(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> 
                 .collect()
         })
         .unwrap_or_default();
+    let mut sort_keys = sort_keys;
+    // The Sort form writes a single sortColumn + direction + nullsLast.
+    if sort_keys.is_empty() {
+        if let Some(col) = string_prop(props, "sortColumn").filter(|s| !s.is_empty()) {
+            let dir = if string_prop(props, "direction").as_deref() == Some("desc") {
+                "DESC"
+            } else {
+                "ASC"
+            };
+            let nulls = if props.get("nullsLast").and_then(JsonValue::as_bool).unwrap_or(true) {
+                " NULLS LAST"
+            } else {
+                " NULLS FIRST"
+            };
+            sort_keys.push(format!("{} {}{}", quote_ident(&col), dir, nulls));
+        }
+    }
     if sort_keys.is_empty() {
         return Ok(format!("SELECT * FROM {}", quote_ident(upstream)));
     }
@@ -645,7 +687,10 @@ fn build_aggregate(
     mode: GroupMode,
 ) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| "missing main input".to_string())?;
-    let group_by: Vec<String> = columns_from_props(props, "groupBy").unwrap_or_default();
+    // The Group By form writes `groupKeys`; accept `groupBy` too.
+    let group_by: Vec<String> = columns_from_props(props, "groupKeys")
+        .or_else(|| columns_from_props(props, "groupBy"))
+        .unwrap_or_default();
     let aggregations = props
         .get("aggregations")
         .and_then(JsonValue::as_array)
@@ -696,11 +741,18 @@ fn build_aggregate(
             GroupMode::Cube => format!(" GROUP BY CUBE ({})", cols),
         }
     };
+    let having = string_prop(props, "havingClause")
+        .or_else(|| string_prop(props, "having"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|h| format!(" HAVING {}", h))
+        .unwrap_or_default();
     Ok(format!(
-        "SELECT {} FROM {}{}",
+        "SELECT {} FROM {}{}{}",
         select_terms.join(", "),
         quote_ident(upstream),
-        group_clause
+        group_clause,
+        having
     ))
 }
 
@@ -1374,6 +1426,24 @@ fn build_rename(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
 
 fn build_mapper(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| "mapper: missing main input".to_string())?;
+    // The Map form writes `expressions` as key-value pairs:
+    // output column name -> SQL expression.
+    if let Some(pairs) = props.get("expressions").and_then(JsonValue::as_array) {
+        let terms: Vec<String> = pairs
+            .iter()
+            .filter_map(|kv| {
+                let name = kv.get("key").and_then(JsonValue::as_str)?.trim();
+                let expr = kv.get("value").and_then(JsonValue::as_str)?.trim();
+                if name.is_empty() || expr.is_empty() {
+                    return None;
+                }
+                Some(format!("{} AS {}", strip_port_prefixes(expr), quote_ident(name)))
+            })
+            .collect();
+        if !terms.is_empty() {
+            return Ok(format!("SELECT {} FROM {}", terms.join(", "), quote_ident(upstream)));
+        }
+    }
     let mapper = props.get("mapper");
     let outputs = mapper
         .and_then(|m| m.get("outputs"))
@@ -1672,8 +1742,10 @@ fn build_cloud_sink(props: &JsonValue, from_view: &str) -> String {
 
 fn build_csv_sink(props: &JsonValue, from_view: &str) -> String {
     let path = string_prop(props, "path").unwrap_or_default();
+    // The sink form writes `writeHeader`; the source uses `hasHeader`.
     let header = props
-        .get("hasHeader")
+        .get("writeHeader")
+        .or_else(|| props.get("hasHeader"))
         .and_then(JsonValue::as_bool)
         .unwrap_or(true);
     let delim = string_prop(props, "delimiter").unwrap_or_else(|| ",".into());

@@ -583,6 +583,115 @@ fn array_collect_groups_into_lists() {
     assert_eq!(len_a, "2");
 }
 
+// These use the EXACT property keys the UI forms write — the bug was
+// the executor reading different keys, so config was silently dropped.
+
+#[test]
+fn groupby_form_keys_actually_group() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "region,amount\nwest,10\nwest,20\neast,5\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("g1", "xf.groupby", json!({
+                "groupKeys": ["region"],
+                "aggregations": [{ "column": "amount", "func": "sum", "output": "total" }]
+            })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "g1"), main_edge("e2", "g1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 2);
+    let west = scalar_string(&format!(
+        "SELECT CAST(total AS VARCHAR) FROM read_csv_auto('{}') WHERE region='west'", out));
+    assert_eq!(west, "30");
+}
+
+#[test]
+fn sort_form_keys_actually_sort() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "n\n3\n1\n2\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("o1", "xf.sort", json!({ "sortColumn": "n", "direction": "asc" })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "o1"), main_edge("e2", "o1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    // First row after ascending sort is 1 (read back preserving order).
+    let first = scalar_string(&format!(
+        "SELECT CAST(n AS VARCHAR) FROM read_csv_auto('{}') LIMIT 1", out));
+    assert_eq!(first, "1");
+}
+
+#[test]
+fn distinct_columns_form_dedups() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "g,v\na,1\na,2\nb,3\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("d1", "xf.distinct", json!({ "columns": ["g"] })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "d1"), main_edge("e2", "d1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 2);
+}
+
+#[test]
+fn map_expressions_form_computes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "amount\n100\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("m1", "xf.map", json!({
+                "expressions": [{ "key": "doubled", "value": "amount * 2" }]
+            })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "m1"), main_edge("e2", "m1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let v = scalar_string(&format!("SELECT CAST(doubled AS VARCHAR) FROM read_csv_auto('{}')", out));
+    assert_eq!(v, "200");
+}
+
+#[test]
+fn sink_error_mode_refuses_to_overwrite() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "a\n1\n");
+    // Pre-create the output so 'error if exists' should refuse.
+    let out = write_file(tmp.path(), "out.csv", "old\n1\n");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true, "mode": "error" })),
+        ]),
+        json!([main_edge("e1", "s1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "error", "should refuse to overwrite existing file");
+}
+
 #[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();

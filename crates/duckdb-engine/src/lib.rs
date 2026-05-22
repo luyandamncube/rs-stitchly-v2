@@ -302,8 +302,23 @@ impl DuckdbEngine {
             });
 
             let started = Instant::now();
+            // Enforce "error if exists" before writing a local file sink.
             let sql = format!("{}{}", secret_prefix, stage.sql);
-            let result = self.run(Some(&db_path), &sql, false);
+            let result = if stage.sink_mode.as_deref() == Some("error")
+                && stage
+                    .sink_path
+                    .as_deref()
+                    .map(is_local_path)
+                    .unwrap_or(false)
+                && std::path::Path::new(stage.sink_path.as_deref().unwrap()).exists()
+            {
+                Err(EngineError::Query(format!(
+                    "Output file already exists: {} (write mode is 'Error if exists')",
+                    stage.sink_path.as_deref().unwrap()
+                )))
+            } else {
+                self.run(Some(&db_path), &sql, false)
+            };
             let elapsed_ms = started.elapsed().as_millis() as u64;
 
             match result {
@@ -433,6 +448,14 @@ fn now_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
+}
+
+/// True for a local filesystem path (not a cloud / http URI).
+fn is_local_path(p: &str) -> bool {
+    let lower = p.to_ascii_lowercase();
+    !["s3://", "gs://", "gcs://", "az://", "azure://", "http://", "https://"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme))
 }
 
 /// Parse the (possibly multiple) top-level JSON arrays the DuckDB CLI

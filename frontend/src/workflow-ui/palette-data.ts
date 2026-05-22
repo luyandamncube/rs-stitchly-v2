@@ -400,8 +400,8 @@ export const PALETTE: Category[] = [
                 components: [
                     snk('csv', 'CSV', 'available'),
                     snk('tsv', 'TSV', 'planned'),
-                    snk('json', 'JSON', 'planned'),
-                    snk('jsonl', 'JSONL / NDJSON', 'planned'),
+                    snk('json', 'JSON', 'available'),
+                    snk('jsonl', 'JSONL / NDJSON', 'available'),
                     snk('xml', 'XML', 'planned'),
                     snk('excel', 'Excel (XLSX)', 'planned'),
                     snk('parquet', 'Parquet', 'available'),

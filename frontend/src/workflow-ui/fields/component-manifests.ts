@@ -592,7 +592,6 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
                         defaultValue: 'overwrite',
                         options: [
                             { label: 'Overwrite (replace)', value: 'overwrite' },
-                            { label: 'Append', value: 'append' },
                             { label: 'Error if exists', value: 'error' },
                         ],
                     },
