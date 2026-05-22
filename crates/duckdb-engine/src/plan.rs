@@ -1321,6 +1321,16 @@ fn build_addcol(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
             .unwrap_or("NULL");
         additions.push(format!("{} AS {}", expr, quote_ident(name)));
     }
+    // The Add-Column / Coalesce form is single: { name, expression }.
+    if additions.is_empty() {
+        let name = string_prop(props, "name").filter(|s| !s.is_empty());
+        let expr = string_prop(props, "expression").or_else(|| string_prop(props, "expr"));
+        if let (Some(name), Some(expr)) = (name, expr) {
+            if !expr.trim().is_empty() {
+                additions.push(format!("{} AS {}", expr, quote_ident(&name)));
+            }
+        }
+    }
     if additions.is_empty() {
         return Ok(format!("SELECT * FROM {}", quote_ident(upstream)));
     }
@@ -1339,9 +1349,6 @@ fn build_cast(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> 
         .and_then(JsonValue::as_array)
         .cloned()
         .unwrap_or_default();
-    if casts.is_empty() {
-        return Ok(format!("SELECT * FROM {}", quote_ident(upstream)));
-    }
     // Use REPLACE so we keep other columns. e.g.
     //   SELECT * REPLACE (CAST(amount AS DECIMAL(10,2)) AS amount) FROM x
     let mut replacements: Vec<String> = Vec::new();
@@ -1363,6 +1370,20 @@ fn build_cast(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> 
             quote_ident(column)
         ));
     }
+    // The Cast form is single-column: { column, targetType }.
+    if replacements.is_empty() {
+        if let Some(column) = string_prop(props, "column").filter(|s| !s.is_empty()) {
+            let target = string_prop(props, "targetType")
+                .or_else(|| string_prop(props, "type"))
+                .unwrap_or_else(|| "string".into());
+            replacements.push(format!(
+                "CAST({} AS {}) AS {}",
+                quote_ident(&column),
+                duckle_type_to_duckdb(&target),
+                quote_ident(&column)
+            ));
+        }
+    }
     if replacements.is_empty() {
         return Ok(format!("SELECT * FROM {}", quote_ident(upstream)));
     }
@@ -1381,9 +1402,6 @@ fn build_rename(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
         .and_then(JsonValue::as_array)
         .cloned()
         .unwrap_or_default();
-    if renames.is_empty() {
-        return Ok(format!("SELECT * FROM {}", quote_ident(upstream)));
-    }
     // RENAME via SELECT * REPLACE — keeps unrelated columns intact.
     // DuckDB doesn't support * REPLACE for renames directly; we use
     // SELECT *, col AS new_col then DROP not possible without listing.
@@ -1410,6 +1428,26 @@ fn build_rename(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
                 quote_ident(from),
                 quote_ident(to)
             ));
+        }
+    }
+    // The Rename form writes `mapping` as key-value pairs: old -> new.
+    if aliases.is_empty() {
+        if let Some(pairs) = props.get("mapping").and_then(JsonValue::as_array) {
+            for kv in pairs {
+                let old = kv.get("key").and_then(JsonValue::as_str);
+                let new = kv.get("value").and_then(JsonValue::as_str);
+                if let (Some(old), Some(new)) = (old, new) {
+                    if !old.is_empty() && !new.is_empty() {
+                        excludes.push(quote_ident(old));
+                        aliases.push(format!(
+                            "{}.{} AS {}",
+                            quote_ident(upstream),
+                            quote_ident(old),
+                            quote_ident(new)
+                        ));
+                    }
+                }
+            }
         }
     }
     if aliases.is_empty() {

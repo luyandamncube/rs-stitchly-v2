@@ -693,6 +693,68 @@ fn sink_error_mode_refuses_to_overwrite() {
 }
 
 #[test]
+fn addcol_form_adds_computed_column() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "amount\n100\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("a1", "xf.addcol", json!({ "name": "tax", "expression": "amount + 5" })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "a1"), main_edge("e2", "a1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let tax = scalar_string(&format!("SELECT CAST(tax AS VARCHAR) FROM read_csv_auto('{}')", out));
+    assert_eq!(tax, "105", "got tax={}", tax);
+}
+
+#[test]
+fn rename_mapping_form_renames() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "a,b\n1,2\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("r1", "xf.rename", json!({ "mapping": [{ "key": "a", "value": "x" }] })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "r1"), main_edge("e2", "r1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    // Column 'a' is now 'x'; reading 'x' must work and equal 1.
+    let x = scalar_string(&format!("SELECT CAST(x AS VARCHAR) FROM read_csv_auto('{}')", out));
+    assert_eq!(x, "1", "got x={}", x);
+}
+
+#[test]
+fn cast_single_column_form_changes_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "v\n10.9\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("c1", "xf.cast", json!({ "column": "v", "targetType": "int32" })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "c1"), main_edge("e2", "c1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    // 10.9 cast to int -> 11; if the cast were ignored it'd stay 10.9.
+    let v = scalar_string(&format!("SELECT CAST(v AS VARCHAR) FROM read_csv_auto('{}')", out));
+    assert_eq!(v, "11", "got v={}", v);
+}
+
+#[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
     let out = out_path(tmp.path(), "never.parquet");
