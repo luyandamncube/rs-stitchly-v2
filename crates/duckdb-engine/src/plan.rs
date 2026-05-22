@@ -431,6 +431,8 @@ fn build_view_sql(
         "qa.describe" => build_describe(inputs),
         "qa.histogram" => build_histogram(inputs, props),
         "qa.standardize" => build_standardize(inputs, props),
+        "qa.dedupe" => build_fuzzy_dedupe(inputs, props),
+        "qa.match" => build_record_match(inputs, props),
         "xf.reorder" => build_reorder(inputs, props),
         "xf.count" => build_count(inputs),
         "xf.join.cross" => build_cross_join(inputs),
@@ -1414,6 +1416,71 @@ fn build_standardize(inputs: &NodeInputs, props: &JsonValue) -> Result<String, S
         "SELECT * REPLACE ({}) FROM {}",
         replacements,
         quote_ident(upstream)
+    ))
+}
+
+/// Lowercased comparison key from the chosen columns, for fuzzy
+/// matching. Errors if no columns are given.
+fn match_key(props: &JsonValue) -> Result<String, String> {
+    let cols = columns_list(props, "columns");
+    if cols.is_empty() {
+        return Err("needs at least one compare column".to_string());
+    }
+    Ok(format!(
+        "lower(concat_ws(' ', {}))",
+        cols.iter()
+            .map(|c| quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+/// A 0..1 similarity score expression over a._key / b._key, plus the
+/// configured threshold. Unknown algorithms fall back to Jaro-Winkler.
+fn similarity(props: &JsonValue) -> (String, f64) {
+    let algo = string_prop(props, "algorithm").unwrap_or_else(|| "jaro-winkler".into());
+    let threshold = props
+        .get("threshold")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.85);
+    let score = match algo.as_str() {
+        "levenshtein" => "(1.0 - levenshtein(a._key, b._key)::DOUBLE \
+             / GREATEST(length(a._key), length(b._key), 1))"
+            .to_string(),
+        _ => "jaro_winkler_similarity(a._key, b._key)".to_string(),
+    };
+    (score, threshold)
+}
+
+/// Fuzzy Deduplicate: keep the first row of each near-duplicate cluster,
+/// where rows are duplicates when their key similarity meets the
+/// threshold.
+fn build_fuzzy_dedupe(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.dedupe"))?;
+    let key = match_key(props).map_err(|e| format!("Fuzzy Deduplicate {e}"))?;
+    let (score, threshold) = similarity(props);
+    Ok(format!(
+        "WITH ranked AS MATERIALIZED (SELECT *, {key} AS _key, \
+         ROW_NUMBER() OVER (ORDER BY {key}) AS _rn FROM {up}) \
+         SELECT a.* EXCLUDE (_key, _rn) FROM ranked a \
+         WHERE NOT EXISTS (SELECT 1 FROM ranked b \
+         WHERE b._rn < a._rn AND {score} >= {threshold})",
+        up = quote_ident(upstream)
+    ))
+}
+
+/// Record Match: self-join the input and emit each pair of rows whose key
+/// similarity meets the threshold, with a match score (record linkage
+/// within one dataset).
+fn build_record_match(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.match"))?;
+    let key = match_key(props).map_err(|e| format!("Record Match {e}"))?;
+    let (score, threshold) = similarity(props);
+    Ok(format!(
+        "WITH k AS MATERIALIZED (SELECT *, {key} AS _key, ROW_NUMBER() OVER () AS _rn FROM {up}) \
+         SELECT a.* EXCLUDE (_key, _rn), b._key AS matched_key, round({score}, 4) AS match_score \
+         FROM k a JOIN k b ON a._rn < b._rn AND {score} >= {threshold}",
+        up = quote_ident(upstream)
     ))
 }
 

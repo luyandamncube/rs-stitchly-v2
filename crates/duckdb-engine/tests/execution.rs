@@ -1032,6 +1032,63 @@ fn standardize_trims_and_uppercases() {
 }
 
 #[test]
+fn fuzzy_dedupe_collapses_near_duplicates() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "id,name\n1,Acme Inc\n2,Acme Inc.\n3,Globex\n4,globex\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("u1", "qa.dedupe", json!({
+                "columns": ["name"], "threshold": 0.9, "algorithm": "jaro-winkler"
+            })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "u1"), main_edge("e2", "u1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    // "Acme Inc"/"Acme Inc." collapse, "Globex"/"globex" collapse: 2 left.
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 2);
+}
+
+#[test]
+fn record_match_finds_similar_pairs() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "id,name\n1,Acme Inc\n2,Acme Inc.\n3,Globex\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("m1", "qa.match", json!({
+                "columns": ["name"], "threshold": 0.85, "algorithm": "jaro-winkler"
+            })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "m1"), main_edge("e2", "m1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    // Only the Acme pair matches: one output row, carrying a match_score.
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 1);
+    let id = scalar_string(&format!(
+        "SELECT CAST(id AS VARCHAR) FROM read_csv_auto('{}')",
+        out
+    ));
+    assert_eq!(id, "1", "got {}", id);
+}
+
+#[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
     let out = out_path(tmp.path(), "never.parquet");

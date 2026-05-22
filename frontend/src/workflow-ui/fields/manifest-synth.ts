@@ -1856,10 +1856,11 @@ function synthQualityCleanse(comp: ComponentDef): ComponentManifest {
             },
         ], 'upstream');
     }
-    if (id === 'qa.dedupe') {
+    if (id === 'qa.dedupe' || id === 'qa.match') {
+        const isMatch = id === 'qa.match';
         return base(comp, [
             {
-                label: 'Fuzzy deduplicate',
+                label: isMatch ? 'Record match' : 'Fuzzy deduplicate',
                 fields: [
                     { key: 'columns', label: 'Compare columns', kind: 'columns', required: true },
                     { key: 'threshold', label: 'Similarity threshold', kind: 'number', defaultValue: 0.85, description: '0.0 to 1.0; higher is stricter.' },
@@ -1871,13 +1872,11 @@ function synthQualityCleanse(comp: ComponentDef): ComponentManifest {
                         options: [
                             { label: 'Jaro-Winkler', value: 'jaro-winkler' },
                             { label: 'Levenshtein', value: 'levenshtein' },
-                            { label: 'Cosine', value: 'cosine' },
-                            { label: 'Soundex', value: 'soundex' },
                         ],
                     },
                 ],
             },
-        ], 'upstream');
+        ], isMatch ? 'declared' : 'upstream');
     }
     return base(comp, [
         {
