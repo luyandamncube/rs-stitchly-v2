@@ -1745,6 +1745,29 @@ function synthWindowTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthStringTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.text.match') {
+        return base(comp, [
+            {
+                label: 'Text match',
+                fields: [
+                    { key: 'column', label: 'Column', kind: 'column', required: true },
+                    { key: 'needle', label: 'Search term', kind: 'text', required: true, placeholder: 'foo' },
+                    {
+                        key: 'mode',
+                        label: 'Mode',
+                        kind: 'select',
+                        defaultValue: 'contains',
+                        options: [
+                            { label: 'Contains substring', value: 'contains' },
+                            { label: 'Starts with prefix', value: 'starts_with' },
+                            { label: 'Ends with suffix', value: 'ends_with' },
+                        ],
+                    },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_<mode>' },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'xf.text.padding') {
         return base(comp, [
             {
@@ -1931,7 +1954,7 @@ function synthStringTransform(comp: ComponentDef): ComponentManifest {
     ], 'upstream');
 }
 
-const TIME_UNITS = ['year', 'quarter', 'month', 'week', 'day', 'hour', 'minute', 'second'];
+const TIME_UNITS = ['year', 'quarter', 'month', 'week', 'day', 'hour', 'minute', 'second', 'dayofweek', 'isodow', 'dayofyear', 'epoch'];
 const unitField = (label: string): Field => ({
     key: 'unit',
     label,
@@ -2031,6 +2054,17 @@ function synthDateTimeTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthNumericTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.num.sign') {
+        return base(comp, [
+            {
+                label: 'Sign',
+                fields: [
+                    { key: 'column', label: 'Column', kind: 'column', required: true },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_sign' },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'xf.num.clamp') {
         return base(comp, [
             {

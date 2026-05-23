@@ -312,6 +312,7 @@ export const PALETTE: Category[] = [
                     xf('text.similarity', 'Text Similarity', 'available', 'Pairwise string similarity between two columns - levenshtein / damerau / jaccard / jaro-winkler'),
                     xf('text.base64', 'Base64', 'available', 'Encode a column to base64 text, or decode base64 back to bytes'),
                     xf('text.padding', 'Pad String', 'available', 'Left or right pad to a fixed length (zero-pad IDs, right-pad for fixed-width output)'),
+                    xf('text.match', 'Text Match', 'available', 'Boolean: does the string contain / start with / end with a substring (DuckDB contains / starts_with / ends_with)'),
                     xf('split', 'Split', 'available'),
                     xf('concat', 'Concat', 'available'),
                     xf('trim', 'Trim', 'available'),
@@ -352,6 +353,7 @@ export const PALETTE: Category[] = [
                     xf('num.bucketize', 'Bucketize', 'available', 'Bin a numeric column into N equal-width buckets between low and high (width_bucket)'),
                     xf('num.zscore', 'Z-Score', 'available', 'Per-row standardized value: (value - mean) / stddev across the whole input'),
                     xf('num.clamp', 'Clamp', 'available', 'Clip values to a [low, high] range - cap outliers before stats'),
+                    xf('num.sign', 'Sign', 'available', 'Sign of a number: -1, 0, or +1'),
                 ],
             },
             {

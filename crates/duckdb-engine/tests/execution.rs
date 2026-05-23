@@ -2263,6 +2263,123 @@ fn geo_distance_computes_point_distance() {
 }
 
 #[test]
+fn text_match_contains_starts_ends() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "items.csv",
+        "id,name\n1,prefix-thing\n2,middle-foo-stuff\n3,end-suffix\n",
+    );
+    // contains 'foo'
+    let out1 = out_path(tmp.path(), "contains.csv");
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("m", "xf.text.match", json!({
+                "column": "name", "needle": "foo", "mode": "contains", "outputColumn": "hit"
+            })),
+            node("k", "snk.csv", json!({ "path": out1, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "m"), main_edge("e2", "m", "k")]),
+    ));
+    assert_eq!(r1.status, "ok", "text.match contains failed: {:?}", r1.error);
+    let c1 = scalar_string(&format!(
+        "SELECT CAST(hit AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
+        out1
+    ));
+    let c2 = scalar_string(&format!(
+        "SELECT CAST(hit AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
+        out1
+    ));
+    assert_eq!(c1, "true");
+    assert_eq!(c2, "false");
+
+    // starts_with 'prefix'
+    let out2 = out_path(tmp.path(), "starts.csv");
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("m", "xf.text.match", json!({
+                "column": "name", "needle": "prefix", "mode": "starts_with", "outputColumn": "hit"
+            })),
+            node("k", "snk.csv", json!({ "path": out2, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "m"), main_edge("e2", "m", "k")]),
+    ));
+    assert_eq!(r2.status, "ok", "text.match starts_with failed: {:?}", r2.error);
+    let s1 = scalar_string(&format!(
+        "SELECT CAST(hit AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
+        out2
+    ));
+    let s2 = scalar_string(&format!(
+        "SELECT CAST(hit AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
+        out2
+    ));
+    assert_eq!(s1, "true");
+    assert_eq!(s2, "false");
+}
+
+#[test]
+fn num_sign_classifies_signed_values() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "n.csv", "id,v\n1,-7\n2,0\n3,42\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("g", "xf.num.sign", json!({ "column": "v", "outputColumn": "sg" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "g"), main_edge("e2", "g", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "sign failed: {:?}", r.error);
+    let s1 = scalar_string(&format!(
+        "SELECT CAST(sg AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
+        out
+    ));
+    let s2 = scalar_string(&format!(
+        "SELECT CAST(sg AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
+        out
+    ));
+    let s3 = scalar_string(&format!(
+        "SELECT CAST(sg AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 3",
+        out
+    ));
+    assert_eq!(s1, "-1.0");
+    assert_eq!(s2, "0.0");
+    assert_eq!(s3, "1.0");
+}
+
+#[test]
+fn dt_extract_dayofweek_via_existing_transform() {
+    // No new component - just verifies that 'dayofweek' (newly added
+    // to the unit dropdown) routes through the existing
+    // xf.dt.extract -> date_part path.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "d.csv", "id,d\n1,2026-01-01\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("e", "xf.dt.extract", json!({ "column": "d", "unit": "dayofweek", "outputColumn": "dow" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "e"), main_edge("e2", "e", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "dt.extract dayofweek failed: {:?}", r.error);
+    // 2026-01-01 is a Thursday. DuckDB date_part('dayofweek', d) returns
+    // 4 (Sunday=0, Monday=1, ..., Thursday=4).
+    let dow = scalar_string(&format!(
+        "SELECT CAST(dow AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
+        out
+    ));
+    assert_eq!(dow, "4");
+}
+
+#[test]
 fn num_clamp_caps_outliers() {
     let engine = engine_or_skip!();
     let tmp = tempfile::tempdir().unwrap();

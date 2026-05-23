@@ -591,6 +591,7 @@ fn build_view_sql(
         "xf.num.bucketize" => build_bucketize(inputs, props),
         "xf.num.zscore" => build_zscore(inputs, props),
         "xf.num.clamp" => build_clamp(inputs, props),
+        "xf.num.sign" => build_sign(inputs, props),
         "xf.rank.filter" => build_rank_filter(inputs, props),
         "xf.fill_forward" => build_fill_forward(inputs, props),
         "xf.cumulative" => build_cumulative(inputs, props),
@@ -613,6 +614,7 @@ fn build_view_sql(
         "xf.text.similarity" => build_text_similarity(inputs, props),
         "xf.text.base64" => build_base64(inputs, props),
         "xf.text.padding" => build_padding(inputs, props),
+        "xf.text.match" => build_text_match(inputs, props),
         "xf.arr.element" | "xf.arr.distinct" | "xf.arr.explode" => {
             build_array(inputs, props, component_id)
         }
@@ -2992,6 +2994,54 @@ fn build_zscore(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
     Ok(format!(
         "SELECT *, CASE WHEN stddev_samp(CAST({col} AS DOUBLE)) OVER () = 0 THEN NULL ELSE (CAST({col} AS DOUBLE) - avg(CAST({col} AS DOUBLE)) OVER ()) / stddev_samp(CAST({col} AS DOUBLE)) OVER () END AS {out} FROM {up}",
         col = qcol,
+        out = quote_ident(&output),
+        up = quote_ident(upstream)
+    ))
+}
+
+/// Text Match: boolean substring / prefix / suffix predicate via
+/// DuckDB's contains / starts_with / ends_with. Adds a boolean
+/// column - pair with Filter Rows downstream to keep only matches.
+fn build_text_match(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.text.match"))?;
+    let column = string_prop(props, "column")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Text Match needs a column".to_string())?;
+    let needle = string_prop(props, "needle")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Text Match needs a search term".to_string())?;
+    let mode = string_prop(props, "mode").unwrap_or_else(|| "contains".into());
+    let fn_name = match mode.as_str() {
+        "starts_with" => "starts_with",
+        "ends_with" => "ends_with",
+        _ => "contains",
+    };
+    let output = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_{}", column, mode));
+    Ok(format!(
+        "SELECT *, {fn}(CAST({col} AS VARCHAR), '{n}') AS {out} FROM {up}",
+        fn = fn_name,
+        col = quote_ident(&column),
+        n = sql_escape(&needle),
+        out = quote_ident(&output),
+        up = quote_ident(upstream)
+    ))
+}
+
+/// Sign: -1 for negative, 0 for zero, +1 for positive. DuckDB's
+/// sign() function on a DOUBLE input.
+fn build_sign(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.num.sign"))?;
+    let column = string_prop(props, "column")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Sign needs a column".to_string())?;
+    let output = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_sign", column));
+    Ok(format!(
+        "SELECT *, sign(CAST({col} AS DOUBLE)) AS {out} FROM {up}",
+        col = quote_ident(&column),
         out = quote_ident(&output),
         up = quote_ident(upstream)
     ))
