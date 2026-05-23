@@ -1730,6 +1730,95 @@ fn excel_source_reads_xlsx() {
 }
 
 #[test]
+fn pg_sink_upsert_updates_and_inserts() {
+    // Live PG test: overwrite (3 rows), then upsert a new batch where
+    // one row collides (key=2, value changed) and one is new (key=4).
+    // After upsert: 4 rows total; the colliding row carries the new
+    // value; the new row was inserted.
+    let engine = engine_or_skip!();
+    let (host, port, db, user, pass) = match pg_env() {
+        Some(x) => x,
+        None => {
+            eprintln!("skipping: set DUCKLE_PG_HOST to run against PostgreSQL");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let table = format!("duckle_upsert_{}", std::process::id());
+
+    // Seed: overwrite with 3 rows including a PRIMARY KEY on id.
+    // (build_relational_sink in overwrite mode does CREATE TABLE AS,
+    // which produces a table without a constraint, so we ALTER it.)
+    let csv1 = write_file(tmp.path(), "in1.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv1, "hasHeader": true })),
+            node("w", "snk.postgres", json!({
+                "host": &host, "port": port, "database": &db,
+                "user": &user, "password": &pass,
+                "schemaName": "public", "tableName": &table, "mode": "overwrite"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r1.status, "ok", "overwrite failed: {:?}", r1.error);
+    // Add a primary key so ON CONFLICT (id) has something to match on.
+    let bin = std::env::var("DUCKLE_DUCKDB_BIN").expect("DUCKLE_DUCKDB_BIN set");
+    let alter = std::process::Command::new(&bin)
+        .arg(":memory:")
+        .arg("-c")
+        .arg(format!(
+            "INSTALL postgres; LOAD postgres; \
+             ATTACH 'host={host} port={port} dbname={db} user={user} password={pass}' AS d (TYPE POSTGRES); \
+             ALTER TABLE d.public.{table} ADD PRIMARY KEY (id);"
+        ))
+        .output()
+        .expect("alter");
+    assert!(
+        alter.status.success(),
+        "ALTER PK failed: {}",
+        String::from_utf8_lossy(&alter.stderr)
+    );
+
+    // Upsert: id=2 changes (bob -> bobby), id=4 is new.
+    let csv2 = write_file(tmp.path(), "in2.csv", "id,name\n2,bobby\n4,dan\n");
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv2, "hasHeader": true })),
+            node("w", "snk.postgres", json!({
+                "host": &host, "port": port, "database": &db,
+                "user": &user, "password": &pass,
+                "schemaName": "public", "tableName": &table, "mode": "upsert",
+                "conflictColumns": ["id"]
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r2.status, "ok", "upsert failed: {:?}", r2.error);
+
+    // Read back: 4 rows total; id=2 carries 'bobby'.
+    let out = out_path(tmp.path(), "out.csv");
+    let r3 = engine.execute_pipeline(&doc(
+        json!([
+            node("r", "src.postgres", json!({
+                "host": host, "port": port, "database": db,
+                "user": user, "password": pass,
+                "schemaName": "public", "tableName": table, "mode": "table"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    ));
+    assert_eq!(r3.status, "ok", "read failed: {:?}", r3.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 4);
+    let updated = scalar_string(&format!(
+        "SELECT name FROM read_csv_auto('{}') WHERE id = 2",
+        out
+    ));
+    assert_eq!(updated, "bobby", "got {}", updated);
+}
+
+#[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
     let out = out_path(tmp.path(), "never.parquet");

@@ -194,18 +194,16 @@ const dbWriteFields = (): Field[] => [
         options: [
             { label: 'Create or replace', value: 'overwrite' },
             { label: 'Append (insert)', value: 'append' },
-            { label: 'Upsert on PK', value: 'upsert' },
-            { label: 'Error if exists', value: 'error' },
+            { label: 'Upsert (insert on conflict / on duplicate key)', value: 'upsert' },
             { label: 'Truncate + insert', value: 'truncate' },
         ],
     },
     {
-        key: 'batchSize',
-        label: 'Batch size',
-        kind: 'integer',
-        defaultValue: 1000,
+        key: 'conflictColumns',
+        label: 'Conflict columns',
+        kind: 'columns',
+        description: 'Used in upsert mode: Postgres / Cockroach use these as ON CONFLICT keys; MySQL / MariaDB rely on the target table\'s existing UNIQUE / PRIMARY KEY index.',
     },
-    { key: 'createIfMissing', label: 'Create table if missing', kind: 'bool', defaultValue: true },
 ];
 
 // Synthesizers ---------------------------------------------------------

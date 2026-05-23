@@ -36,6 +36,34 @@ pub struct Stage {
     /// enforce "error if exists" before writing.
     pub sink_path: Option<String>,
     pub sink_mode: Option<String>,
+    /// For relational-DB sinks in upsert mode: the planner can't
+    /// enumerate the upstream's non-key columns up front, so it leaves
+    /// `sql` empty and the executor introspects the materialized
+    /// upstream (DESCRIBE) before assembling the final INSERT ... ON
+    /// CONFLICT statement.
+    pub upsert: Option<UpsertSpec>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertSpec {
+    pub family: UpsertFamily,
+    /// INSTALL/LOAD/ATTACH preamble; ends with a trailing space.
+    pub attach: String,
+    /// Fully qualified target inside the ATTACHed DB
+    /// (e.g. `duckle_dst."public"."orders"`).
+    pub target: String,
+    /// The upstream materialized table name in the temp DB.
+    pub from_view: String,
+    /// Columns the user declared as the conflict key.
+    pub conflict_cols: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum UpsertFamily {
+    /// `ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col` (Postgres, Cockroach).
+    Postgres,
+    /// `ON DUPLICATE KEY UPDATE col = VALUES(col)` (MySQL, MariaDB).
+    MySql,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -306,6 +334,7 @@ fn build_stage(
         .unwrap_or(JsonValue::Null);
     let mut sink_path: Option<String> = None;
     let mut sink_mode: Option<String> = None;
+    let mut upsert: Option<UpsertSpec> = None;
     // ATTACH statements for external-DB nodes (DuckDB/SQLite). Each stage
     // runs in its own CLI process, so fixed aliases are collision-free.
     let attach = attach_prelude(component_id, &props);
@@ -315,11 +344,55 @@ fn build_stage(
             .ok_or_else(|| missing_input(node, "main"))?;
         sink_path = string_prop(&props, "path").filter(|s| !s.is_empty());
         sink_mode = string_prop(&props, "mode").filter(|s| !s.is_empty());
-        (
-            format!("{}{}", attach, build_sink_sql(component_id, &props, from_view)?),
-            StageKind::Sink,
-            Some(from_view.to_string()),
-        )
+        // Relational DB upsert is the only sink mode whose SQL the
+        // planner can't fully generate up front: the SET clause needs
+        // the upstream's non-key column list, which the executor reads
+        // via DESCRIBE before assembling the final INSERT.
+        if sink_mode.as_deref() == Some("upsert")
+            && matches!(
+                component_id,
+                "snk.postgres" | "snk.cockroach" | "snk.mysql" | "snk.mariadb"
+            )
+        {
+            let conflict_cols = columns_list(&props, "conflictColumns");
+            if conflict_cols.is_empty() {
+                return Err(EngineError::Config(format!(
+                    "{}: upsert mode needs at least one column in Conflict columns",
+                    component_id
+                )));
+            }
+            let table = string_prop(&props, "tableName")
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    EngineError::Config(format!("{}: table name is required", component_id))
+                })?;
+            let schema = string_prop(&props, "schemaName").filter(|s| !s.is_empty());
+            let target = relational_qualified(
+                "duckle_dst",
+                component_id,
+                schema.as_deref(),
+                &table,
+            );
+            let family = if component_id == "snk.postgres" || component_id == "snk.cockroach" {
+                UpsertFamily::Postgres
+            } else {
+                UpsertFamily::MySql
+            };
+            upsert = Some(UpsertSpec {
+                family,
+                attach: attach.clone(),
+                target,
+                from_view: from_view.to_string(),
+                conflict_cols,
+            });
+            (String::new(), StageKind::Sink, Some(from_view.to_string()))
+        } else {
+            (
+                format!("{}{}", attach, build_sink_sql(component_id, &props, from_view)?),
+                StageKind::Sink,
+                Some(from_view.to_string()),
+            )
+        }
     } else {
         let body = build_view_sql(component_id, &props, inputs).map_err(|e| {
             EngineError::Config(format!("{} ({} / {}): {}", node.data.label, component_id, node.id, e))
@@ -355,6 +428,7 @@ fn build_stage(
         from,
         sink_path,
         sink_mode,
+        upsert,
     })
 }
 

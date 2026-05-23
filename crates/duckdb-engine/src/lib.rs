@@ -308,7 +308,12 @@ impl DuckdbEngine {
             let started = Instant::now();
             // Enforce "error if exists" before writing a local file sink.
             let sql = format!("{}{}", secret_prefix, stage.sql);
-            let result = if stage.sink_mode.as_deref() == Some("error")
+            let result = if let Some(spec) = stage.upsert.as_ref() {
+                // Relational-DB upsert: DESCRIBE the upstream first to
+                // get the column list, then assemble INSERT ... ON
+                // CONFLICT (Postgres) or ON DUPLICATE KEY UPDATE (MySQL).
+                self.run_upsert(&db_path, &secret_prefix, spec)
+            } else if stage.sink_mode.as_deref() == Some("error")
                 && stage
                     .sink_path
                     .as_deref()
@@ -408,6 +413,43 @@ impl DuckdbEngine {
             preview,
             error: overall_error,
         }
+    }
+
+    /// Relational-DB upsert: DESCRIBE the upstream materialized table to
+    /// enumerate columns, then build INSERT ... ON CONFLICT (Postgres /
+    /// Cockroach) or INSERT ... ON DUPLICATE KEY UPDATE (MySQL /
+    /// MariaDB) with the right SET clause.
+    fn run_upsert(
+        &self,
+        db: &Path,
+        secret_prefix: &str,
+        spec: &plan::UpsertSpec,
+    ) -> Result<String, EngineError> {
+        let desc_sql = format!("DESCRIBE {};", plan::quote_ident(&spec.from_view));
+        let rows = self.run_rows(Some(db), &desc_sql)?;
+        let all_cols: Vec<String> = rows
+            .iter()
+            .filter_map(|r| {
+                r.get("column_name")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+        if all_cols.is_empty() {
+            return Err(EngineError::Query(format!(
+                "Upsert: couldn't read columns from '{}'",
+                spec.from_view
+            )));
+        }
+        let key_set: std::collections::HashSet<&str> =
+            spec.conflict_cols.iter().map(|s| s.as_str()).collect();
+        let set_cols: Vec<&String> = all_cols
+            .iter()
+            .filter(|c| !key_set.contains(c.as_str()))
+            .collect();
+        let upsert_sql = build_upsert_statement(spec, &set_cols);
+        let full = format!("{}{}{}", secret_prefix, spec.attach, upsert_sql);
+        self.run(Some(db), &full, false)
     }
 
     fn count_rows(&self, db: &Path, name: &str) -> Result<u64, EngineError> {
@@ -533,6 +575,55 @@ pub(crate) fn sql_escape(s: &str) -> String {
 /// Build a `CREATE OR REPLACE SECRET` statement for a cloud format if
 /// the options carry credentials. `secret_name` keeps per-source
 /// secrets distinct so connections don't trample each other.
+/// Compose the INSERT ... ON CONFLICT / ON DUPLICATE KEY UPDATE
+/// statement for a relational sink in upsert mode, given the columns
+/// the DESCRIBE step found and the user-declared conflict key.
+fn build_upsert_statement(spec: &plan::UpsertSpec, set_cols: &[&String]) -> String {
+    let from = plan::quote_ident(&spec.from_view);
+    let insert = format!("INSERT INTO {} SELECT * FROM {}", spec.target, from);
+    match spec.family {
+        plan::UpsertFamily::Postgres => {
+            let key_list = spec
+                .conflict_cols
+                .iter()
+                .map(|c| plan::quote_ident(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if set_cols.is_empty() {
+                format!("{} ON CONFLICT ({}) DO NOTHING", insert, key_list)
+            } else {
+                let set_clause = set_cols
+                    .iter()
+                    .map(|c| {
+                        let q = plan::quote_ident(c);
+                        format!("{q} = EXCLUDED.{q}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{} ON CONFLICT ({}) DO UPDATE SET {}", insert, key_list, set_clause)
+            }
+        }
+        plan::UpsertFamily::MySql => {
+            if set_cols.is_empty() {
+                // No non-key cols means there's nothing to update on
+                // conflict; emit INSERT IGNORE so the operation is at
+                // least idempotent on the existing rows.
+                format!("INSERT IGNORE INTO {} SELECT * FROM {}", spec.target, from)
+            } else {
+                // MySQL's ON DUPLICATE KEY UPDATE relies on whatever
+                // UNIQUE / PRIMARY KEY indexes the target table already
+                // has; conflict_cols are informational on the form.
+                let set_clause = set_cols
+                    .iter()
+                    .map(|c| format!("`{c}` = VALUES(`{c}`)"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{} ON DUPLICATE KEY UPDATE {}", insert, set_clause)
+            }
+        }
+    }
+}
+
 pub(crate) fn secret_statement(
     format: &str,
     secret_name: &str,
