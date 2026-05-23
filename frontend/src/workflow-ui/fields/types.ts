@@ -88,6 +88,7 @@ export type AggregationFunction =
     | 'first'
     | 'last'
     | 'count_distinct'
+    | 'approx_count_distinct'
     | 'array_agg';
 
 export const AGG_FUNCTIONS: AggregationFunction[] = [
@@ -99,6 +100,7 @@ export const AGG_FUNCTIONS: AggregationFunction[] = [
     'first',
     'last',
     'count_distinct',
+    'approx_count_distinct',
     'array_agg',
 ];
 

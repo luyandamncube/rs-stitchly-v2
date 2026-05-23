@@ -539,6 +539,7 @@ fn build_view_sql(
         "xf.limit" => build_limit(inputs, props),
         "xf.sort" => build_sort(inputs, props),
         "xf.agg" | "xf.groupby" => build_aggregate(inputs, props, GroupMode::Plain),
+        "xf.approx.quantile" => build_approx_quantile(inputs, props),
         "xf.rollup" => build_aggregate(inputs, props, GroupMode::Rollup),
         "xf.cube" => build_aggregate(inputs, props, GroupMode::Cube),
         "xf.aggwin" => build_window_aggregate(inputs, props),
@@ -573,8 +574,11 @@ fn build_view_sql(
         "xf.reorder" => build_reorder(inputs, props),
         "xf.count" => build_count(inputs),
         "xf.join.cross" => build_cross_join(inputs),
-        "xf.regex" | "xf.trim" | "xf.case" | "xf.length" | "xf.substring" | "xf.concat"
-        | "xf.split" | "xf.format" => build_string(inputs, props, component_id),
+        "xf.join.spatial" => build_spatial_join(inputs, props),
+        "xf.regex" | "xf.regex.extract" | "xf.trim" | "xf.case" | "xf.length"
+        | "xf.substring" | "xf.concat" | "xf.split" | "xf.format" => {
+            build_string(inputs, props, component_id)
+        }
         "xf.hash" => build_hash(inputs, props),
         "xf.ip.parse" => build_ip_parse(inputs, props),
         "xf.geo.distance" => build_geo_distance(inputs, props),
@@ -879,6 +883,7 @@ fn build_aggregate(
         };
         let agg_expr = match func.as_str() {
             "COUNT_DISTINCT" => format!("COUNT(DISTINCT {})", column_expr),
+            "APPROX_COUNT_DISTINCT" => format!("approx_count_distinct({})", column_expr),
             _ => format!("{}({})", func, column_expr),
         };
         select_terms.push(format!("{} AS {}", agg_expr, quote_ident(&alias)));
@@ -1198,6 +1203,19 @@ fn build_string(inputs: &NodeInputs, props: &JsonValue, component_id: &str) -> R
             sql_escape(&pattern),
             sql_escape(&replacement)
         ),
+        "xf.regex.extract" => {
+            let group_idx = props
+                .get("groupIndex")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                .max(0);
+            format!(
+                "regexp_extract(CAST({} AS VARCHAR), '{}', {})",
+                col,
+                sql_escape(&pattern),
+                group_idx
+            )
+        }
         "xf.trim" => format!("trim(CAST({} AS VARCHAR))", col),
         "xf.case" => match pattern.to_lowercase().as_str() {
             "lower" => format!("lower(CAST({} AS VARCHAR))", col),
@@ -1326,6 +1344,52 @@ fn build_reorder(inputs: &NodeInputs, props: &JsonValue) -> Result<String, Strin
 fn build_count(inputs: &NodeInputs) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.count"))?;
     Ok(format!("SELECT count(*) AS row_count FROM {}", quote_ident(upstream)))
+}
+
+/// Approximate Quantile via DuckDB's t-digest. Single-row aggregate
+/// (or one row per group, if `groupBy` is set). Picks `quantile` from
+/// 0..1 (default 0.5 = median). approx_quantile uses fixed memory
+/// regardless of cardinality, so it's the right tool for "what's the
+/// p95 latency over 10B rows" instead of an exact quantile() call
+/// that would need to sort the whole input.
+fn build_approx_quantile(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.approx.quantile"))?;
+    let column = string_prop(props, "column")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Approx Quantile needs a column".to_string())?;
+    let q = props.get("quantile").and_then(|v| v.as_f64()).unwrap_or(0.5);
+    let q = if (0.0..=1.0).contains(&q) { q } else { 0.5 };
+    let group_by: Vec<String> = columns_from_props(props, "groupBy").unwrap_or_default();
+    let alias = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_q{}", column, (q * 100.0).round() as i64));
+    let select_extra = group_by
+        .iter()
+        .map(|c| quote_ident(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let select = if group_by.is_empty() {
+        format!("approx_quantile({}, {}) AS {}", quote_ident(&column), q, quote_ident(&alias))
+    } else {
+        format!(
+            "{}, approx_quantile({}, {}) AS {}",
+            select_extra,
+            quote_ident(&column),
+            q,
+            quote_ident(&alias)
+        )
+    };
+    let group_clause = if group_by.is_empty() {
+        String::new()
+    } else {
+        format!(" GROUP BY {}", select_extra)
+    };
+    Ok(format!(
+        "SELECT {} FROM {}{}",
+        select,
+        quote_ident(upstream),
+        group_clause
+    ))
 }
 
 fn build_cross_join(inputs: &NodeInputs) -> Result<String, String> {
@@ -2496,7 +2560,12 @@ fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
         // the first-launch DUCKDB_EXTENSIONS pre-fetch so the install
         // stays small. INSTALL runs lazily on first use, then LOAD on
         // every subsequent run.
-        "src.spatial" | "snk.spatial" | "xf.geo.distance" | "xf.geo.buffer" | "xf.geo.intersects" => {
+        "src.spatial"
+        | "snk.spatial"
+        | "xf.geo.distance"
+        | "xf.geo.buffer"
+        | "xf.geo.intersects"
+        | "xf.join.spatial" => {
             return "INSTALL spatial; LOAD spatial; ".into();
         }
         // inet is a small built-in extension. INSTALL is a no-op once
@@ -2855,6 +2924,51 @@ fn build_geo_buffer(inputs: &NodeInputs, props: &JsonValue) -> Result<String, St
         distance = distance,
         out = quote_ident(&output),
         up = quote_ident(upstream)
+    ))
+}
+
+/// Spatial Join: a two-input join whose predicate is a spatial
+/// relationship between left.geom and right.geom (intersects /
+/// contains / within / touches / crosses / overlaps / equals).
+/// Different from xf.geo.intersects which is a one-input enrichment
+/// against a fixed target. The classic "orders inside delivery zone"
+/// example is `left=orders.point JOIN right=zones.polygon ON
+/// ST_Within(orders.point, zones.polygon)`.
+fn build_spatial_join(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let left = inputs
+        .main()
+        .ok_or_else(|| "Spatial Join needs a driving input".to_string())?;
+    let right = inputs
+        .first_lookup()
+        .ok_or_else(|| "Spatial Join needs a lookup input".to_string())?;
+    let left_col = string_prop(props, "leftGeomColumn")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Spatial Join needs leftGeomColumn".to_string())?;
+    let right_col = string_prop(props, "rightGeomColumn")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Spatial Join needs rightGeomColumn".to_string())?;
+    let relation = string_prop(props, "relation").unwrap_or_else(|| "intersects".into());
+    let fn_name = match relation.as_str() {
+        "contains" => "ST_Contains",
+        "within" => "ST_Within",
+        "touches" => "ST_Touches",
+        "crosses" => "ST_Crosses",
+        "overlaps" => "ST_Overlaps",
+        "equals" => "ST_Equals",
+        _ => "ST_Intersects",
+    };
+    let kind = match string_prop(props, "joinType").as_deref() {
+        Some("left") => "LEFT",
+        _ => "INNER",
+    };
+    Ok(format!(
+        "SELECT m.*, r.* FROM {} m {} JOIN {} r ON {}(CAST(m.{} AS GEOMETRY), CAST(r.{} AS GEOMETRY))",
+        quote_ident(left),
+        kind,
+        quote_ident(right),
+        fn_name,
+        quote_ident(&left_col),
+        quote_ident(&right_col)
     ))
 }
 

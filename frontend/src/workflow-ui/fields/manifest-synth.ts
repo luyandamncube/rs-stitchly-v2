@@ -1478,6 +1478,25 @@ function synthRowTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthAggregateTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.approx.quantile') {
+        return base(comp, [
+            {
+                label: 'Approx quantile',
+                fields: [
+                    { key: 'column', label: 'Column', kind: 'column', required: true },
+                    {
+                        key: 'quantile',
+                        label: 'Quantile (0 - 1)',
+                        kind: 'number',
+                        defaultValue: 0.5,
+                        description: '0.5 = median, 0.95 = p95, 0.99 = p99',
+                    },
+                    { key: 'groupBy', label: 'Group by (optional)', kind: 'columns' },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_q50' },
+                ],
+            },
+        ], 'declared');
+    }
     if (comp.id === 'xf.aggwin') {
         // Window aggregate: an aggregate over a window that keeps every row.
         return base(comp, [
@@ -1510,6 +1529,42 @@ function synthAggregateTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthJoinTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.join.spatial') {
+        return base(comp, [
+            {
+                label: 'Spatial join',
+                fields: [
+                    { key: 'leftGeomColumn', label: 'Left geometry column', kind: 'text', required: true, placeholder: 'orders.point' },
+                    { key: 'rightGeomColumn', label: 'Right geometry column', kind: 'text', required: true, placeholder: 'zones.polygon' },
+                    {
+                        key: 'relation',
+                        label: 'Spatial relation',
+                        kind: 'select',
+                        defaultValue: 'intersects',
+                        options: [
+                            { label: 'Intersects (any overlap)', value: 'intersects' },
+                            { label: 'Contains (left contains right)', value: 'contains' },
+                            { label: 'Within (left within right)', value: 'within' },
+                            { label: 'Touches', value: 'touches' },
+                            { label: 'Crosses', value: 'crosses' },
+                            { label: 'Overlaps', value: 'overlaps' },
+                            { label: 'Equals', value: 'equals' },
+                        ],
+                    },
+                    {
+                        key: 'joinType',
+                        label: 'Join type',
+                        kind: 'select',
+                        defaultValue: 'inner',
+                        options: [
+                            { label: 'INNER', value: 'inner' },
+                            { label: 'LEFT', value: 'left' },
+                        ],
+                    },
+                ],
+            },
+        ], 'declared');
+    }
     const joinType = comp.id.split('.').pop() ?? 'inner';
     return base(comp, [
         {
@@ -1613,6 +1668,25 @@ function synthWindowTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthStringTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.regex.extract') {
+        return base(comp, [
+            {
+                label: 'Regex extract',
+                fields: [
+                    { key: 'column', label: 'Column', kind: 'column', required: true },
+                    { key: 'pattern', label: 'Pattern', kind: 'text', required: true, placeholder: '([0-9]+)' },
+                    {
+                        key: 'groupIndex',
+                        label: 'Group',
+                        kind: 'number',
+                        defaultValue: 0,
+                        description: '0 = whole match, 1 = first capture group, 2 = second, ...',
+                    },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: 'leave blank to overwrite' },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'xf.ip.parse') {
         return base(comp, [
             {

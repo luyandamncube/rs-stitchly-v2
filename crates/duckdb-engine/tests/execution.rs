@@ -2263,6 +2263,175 @@ fn geo_distance_computes_point_distance() {
 }
 
 #[test]
+fn approx_count_distinct_via_groupby() {
+    // Exercises the new function name through the existing aggregate
+    // path. APPROX_COUNT_DISTINCT lands as DuckDB approx_count_distinct.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "events.csv",
+        "region,user\nus,1\nus,1\nus,2\nus,3\neu,4\neu,4\neu,5\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("g", "xf.groupby", json!({
+                "groupKeys": ["region"],
+                "aggregations": [
+                    { "column": "user", "func": "approx_count_distinct", "output": "users" }
+                ]
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "g"), main_edge("e2", "g", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "approx_count_distinct failed: {:?}", r.error);
+    // 3 distinct US users, 2 distinct EU users; approx HLL is exact at
+    // these tiny cardinalities.
+    let us = scalar_string(&format!(
+        "SELECT CAST(users AS VARCHAR) FROM read_csv_auto('{}') WHERE region = 'us'",
+        out
+    ));
+    let eu = scalar_string(&format!(
+        "SELECT CAST(users AS VARCHAR) FROM read_csv_auto('{}') WHERE region = 'eu'",
+        out
+    ));
+    assert_eq!(us, "3");
+    assert_eq!(eu, "2");
+}
+
+#[test]
+fn approx_quantile_finds_median() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    // Median of 1..9 is 5.
+    let csv = write_file(
+        tmp.path(),
+        "nums.csv",
+        "id,n\n1,1\n2,2\n3,3\n4,4\n5,5\n6,6\n7,7\n8,8\n9,9\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("q", "xf.approx.quantile", json!({
+                "column": "n", "quantile": 0.5, "outputColumn": "p50"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "q"), main_edge("e2", "q", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "approx_quantile failed: {:?}", r.error);
+    let p50 = scalar_string(&format!(
+        "SELECT CAST(round(p50, 0) AS VARCHAR) FROM read_csv_auto('{}')",
+        out
+    ));
+    // approx_quantile on this tiny input lands at 5.
+    assert_eq!(p50, "5");
+}
+
+#[test]
+fn regex_extract_pulls_capture_group() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "logs.csv",
+        "id,line\n1,User=alice ID=42\n2,User=bob ID=99\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("x", "xf.regex.extract", json!({
+                "column": "line",
+                "pattern": "ID=([0-9]+)",
+                "groupIndex": 1,
+                "outputColumn": "user_id"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "x"), main_edge("e2", "x", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "regex extract failed: {:?}", r.error);
+    let id1 = scalar_string(&format!(
+        "SELECT user_id FROM read_csv_auto('{}') WHERE id = 1",
+        out
+    ));
+    let id2 = scalar_string(&format!(
+        "SELECT user_id FROM read_csv_auto('{}') WHERE id = 2",
+        out
+    ));
+    assert_eq!(id1, "42");
+    assert_eq!(id2, "99");
+}
+
+#[test]
+fn spatial_join_matches_points_inside_polygons() {
+    if std::env::var("DUCKLE_TEST_SPATIAL").ok().as_deref() != Some("1") {
+        eprintln!("skipping: set DUCKLE_TEST_SPATIAL=1 to run spatial tests");
+        return;
+    }
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let pts = out_path(tmp.path(), "points.parquet");
+    let polys = out_path(tmp.path(), "polys.parquet");
+    duckdb_exec(
+        ":memory:",
+        &format!(
+            "INSTALL spatial; LOAD spatial; \
+             COPY (SELECT * FROM (VALUES \
+                 ('a', ST_Point(5, 5)), \
+                 ('b', ST_Point(50, 50)), \
+                 ('c', ST_Point(7, 7)) \
+             ) t(name, p)) TO '{}' (FORMAT PARQUET); \
+             COPY (SELECT * FROM (VALUES \
+                 ('square', ST_GeomFromText('POLYGON((0 0, 0 10, 10 10, 10 0, 0 0))')) \
+             ) t(zone, g)) TO '{}' (FORMAT PARQUET)",
+            pts, polys
+        ),
+    );
+    let out = out_path(tmp.path(), "matched.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("L", "src.parquet", json!({ "path": pts })),
+            node("R", "src.parquet", json!({ "path": polys })),
+            node("j", "xf.join.spatial", json!({
+                "leftGeomColumn": "p",
+                "rightGeomColumn": "g",
+                "relation": "within"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([
+            main_edge("e1", "L", "j"),
+            lookup_edge("e2", "R", "j"),
+            main_edge("e3", "j", "k"),
+        ]),
+    ));
+    assert_eq!(r.status, "ok", "spatial join failed: {:?}", r.error);
+    // 'a' (5,5) and 'c' (7,7) are inside the square; 'b' (50,50) is not.
+    let matched = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(matched, 2, "expected 2 matched rows, got {}", matched);
+    let names: Vec<String> = (0..2)
+        .map(|_| String::new())
+        .collect::<Vec<_>>();
+    let _ = names;
+    let has_a = scalar_string(&format!(
+        "SELECT CAST(count(*) AS VARCHAR) FROM read_csv_auto('{}') WHERE name = 'a'",
+        out
+    ));
+    let has_b = scalar_string(&format!(
+        "SELECT CAST(count(*) AS VARCHAR) FROM read_csv_auto('{}') WHERE name = 'b'",
+        out
+    ));
+    assert_eq!(has_a, "1");
+    assert_eq!(has_b, "0");
+}
+
+#[test]
 fn geo_intersects_flags_overlapping_geometries() {
     if std::env::var("DUCKLE_TEST_SPATIAL").ok().as_deref() != Some("1") {
         eprintln!("skipping: set DUCKLE_TEST_SPATIAL=1 to run spatial tests");

@@ -18,6 +18,8 @@ dist/
 .yarn/
 
 # Editor / OS
+# Claude Code local-user settings - keep out of version control
+.claude/settings.local.json
 .vscode/*
 !.vscode/settings.json.example
 !.vscode/extensions.json

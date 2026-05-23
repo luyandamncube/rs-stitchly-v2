@@ -255,6 +255,7 @@ export const PALETTE: Category[] = [
                     xf('cube', 'Cube', 'available'),
                     xf('aggwin', 'Window Aggregate', 'available', 'Aggregate over a window, keep every row'),
                     xf('count', 'Count Rows', 'available'),
+                    xf('approx.quantile', 'Approx Quantile', 'available', 'Approximate quantile (median, p95, p99) via t-digest - fixed memory regardless of cardinality'),
                 ],
             },
             {
@@ -266,6 +267,7 @@ export const PALETTE: Category[] = [
                     xf('join.right', 'Right Join', 'available'),
                     xf('join.full', 'Full Outer Join', 'available'),
                     xf('join.cross', 'Cross Join', 'available'),
+                    xf('join.spatial', 'Spatial Join', 'available', 'Two-input join whose predicate is ST_Intersects / Contains / Within / Touches / Crosses / Overlaps / Equals'),
                     xf('lookup', 'Lookup', 'available'),
                     xf('semi', 'Semi Join', 'available'),
                     xf('anti', 'Anti Join', 'available'),
@@ -300,6 +302,7 @@ export const PALETTE: Category[] = [
                 label: 'Strings',
                 components: [
                     xf('regex', 'Regex Replace', 'available'),
+                    xf('regex.extract', 'Regex Extract', 'available', 'Extract a capture group from a column via regexp_extract'),
                     xf('split', 'Split', 'available'),
                     xf('concat', 'Concat', 'available'),
                     xf('trim', 'Trim', 'available'),

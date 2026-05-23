@@ -111,11 +111,11 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 |---|---|
 | **Fields** | Map (visual row mapper), Project / Select, Cast / Convert Type, Rename, Add Column, Drop Columns, Reorder, Coalesce / Null Fill |
 | **Rows** | Filter (visual builder or raw SQL, with a **reject** port), Distinct, Sample, Top N / Limit, Sort, Skip / Offset |
-| **Aggregate** | Group By, Rollup, Cube, Count Rows, **Window Aggregate** (SUM / AVG / COUNT / MIN / MAX OVER a window, keeps every row) |
-| **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti |
+| **Aggregate** | Group By, Rollup, Cube, Count Rows, **Window Aggregate** (SUM / AVG / COUNT / MIN / MAX OVER a window, keeps every row), **Approx Quantile** (median / p95 / p99 via t-digest, fixed memory regardless of cardinality), **Approx Count Distinct** (HyperLogLog, available as a function in the Group By dropdown) |
+| **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti, **Spatial Join** (two-input join whose predicate is ST_Intersects / Contains / Within / Touches / Crosses / Overlaps / Equals; INNER or LEFT) |
 | **Set operations** | Union, Union All, Intersect, Except / Minus |
 | **Window** | Row Number, Rank, Dense Rank, Lead, Lag, First Value, Last Value, NTile |
-| **Strings** | Regex Replace, Split, Concat, Trim, Case Change, Length, Substring, Format, **Hash** (md5 / sha1 / sha256 for anonymization or deterministic IDs), **IP Parse** (extract host / family / netmask / broadcast / mask length / network from IP or CIDR text via the `inet` extension) |
+| **Strings** | Regex Replace, **Regex Extract** (pull a capture group out of a column via `regexp_extract`), Split, Concat, Trim, Case Change, Length, Substring, Format, **Hash** (md5 / sha1 / sha256 for anonymization or deterministic IDs), **IP Parse** (extract host / family / netmask / broadcast / mask length / network from IP or CIDR text via the `inet` extension) |
 | **Date / Time** | Parse, Format, Extract Part, Date Diff, Date Add, Truncate, Timezone Convert |
 | **Numeric** | Round, Modulo, Absolute, Logarithm, Power, Square Root |
 | **JSON / nested** | Parse JSON, Stringify, Flatten, JSONPath Extract, Merge Objects |
