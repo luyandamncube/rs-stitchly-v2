@@ -191,7 +191,7 @@ export const PALETTE: Category[] = [
                 label: 'Other',
                 components: [
                     src('ftp', 'SFTP / FTP', 'planned'),
-                    src('http', 'HTTP', 'planned'),
+                    src('http', 'HTTP', 'available', 'Read CSV / Parquet / JSON from any HTTP(S) URL via httpfs'),
                     src('email', 'Email (IMAP)', 'planned'),
                     src('git', 'Git Repository', 'planned'),
                     src('clipboard', 'Clipboard', 'planned'),
@@ -407,7 +407,7 @@ export const PALETTE: Category[] = [
                 label: 'Files',
                 components: [
                     snk('csv', 'CSV', 'available'),
-                    snk('tsv', 'TSV', 'planned'),
+                    snk('tsv', 'TSV', 'available', 'Write tab-separated files'),
                     snk('json', 'JSON', 'available'),
                     snk('jsonl', 'JSONL / NDJSON', 'available'),
                     snk('xml', 'XML', 'planned'),

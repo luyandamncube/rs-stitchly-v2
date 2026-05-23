@@ -1904,6 +1904,30 @@ fn delta_source_reads_fixture() {
 }
 
 #[test]
+fn tsv_sink_writes_tab_delimited() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n");
+    let out = out_path(tmp.path(), "out.tsv");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("k", "snk.tsv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "s", "k")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "tsv write failed: {:?}", result.error);
+    // Read back as a tab-delimited CSV and confirm row count + a value.
+    assert_eq!(
+        count(&format!("read_csv_auto('{}', delim = '\t', header = true)", out)),
+        2
+    );
+    let raw = std::fs::read_to_string(&out).expect("read out.tsv");
+    assert!(raw.contains('\t'), "expected tab delimiter, got: {:?}", raw);
+}
+
+#[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
     let out = out_path(tmp.path(), "never.parquet");
