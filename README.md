@@ -87,11 +87,16 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 
 | Group | Connectors | Status |
 |---|---|---|
-| **Files** | CSV, TSV, Parquet, JSON, JSONL / NDJSON | Available |
+| **Files** | CSV, TSV, Parquet, JSON, JSONL / NDJSON, Excel (.xlsx) | Available |
+| **Geospatial files** | GeoJSON, Shapefile, GeoPackage, KML, GPX, GML via the `spatial` extension | Available (lazy-loaded) |
+| **Lakehouse table formats** | Apache Iceberg, Delta Lake, DuckLake | Available |
 | **Embedded databases** | SQLite (read tables), DuckDB (read tables or run a query) | Available |
-| **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob, HTTP(S) via DuckDB `httpfs` | Available |
-| **Relational databases** | PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, ClickHouse, generic JDBC | Planned |
-| **Cloud warehouses** | Snowflake, BigQuery, Redshift, Databricks SQL, Synapse, MotherDuck | Planned |
+| **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB | Available (live CI tests for PG + MySQL) |
+| **Network relational DBs** | SQL Server, Oracle, IBM DB2, ClickHouse, generic JDBC | Planned (need extensions DuckDB doesn't ship) |
+| **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob, HTTP(S), MinIO, Cloudflare R2, Backblaze B2 | Available (live CI test for MinIO) |
+| **Cloud warehouses** | MotherDuck (DuckDB-native) | Available |
+| **Cloud warehouses** | Snowflake, BigQuery, Redshift, Databricks SQL, Synapse | Planned (need vendor SDKs) |
+| **Avro files** | Apache Avro via the `avro` community extension | Preview (community extension awaiting a v1.4+ build) |
 | **Streaming** | Kafka, Pulsar, Redpanda, NATS, Kinesis, Event Hubs, Pub/Sub | Planned |
 | **APIs and SaaS** | REST, GraphQL, gRPC, plus Salesforce, HubSpot, Stripe, Notion, GitHub, and more | Planned |
 | **NoSQL and search** | MongoDB, Cassandra, Redis, DynamoDB, Elasticsearch, OpenSearch | Planned |
@@ -99,13 +104,13 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 
 ### Transforms
 
-40+ transforms compile to SQL and run today, grouped by what they do. All of the following are **available**:
+50+ transforms compile to SQL and run today. All of the following are **available**:
 
 | Group | Operations |
 |---|---|
 | **Fields** | Map (visual row mapper), Project / Select, Cast / Convert Type, Rename, Add Column, Drop Columns, Reorder, Coalesce / Null Fill |
 | **Rows** | Filter (visual builder or raw SQL, with a **reject** port), Distinct, Sample, Top N / Limit, Sort, Skip / Offset |
-| **Aggregate** | Group By, Rollup, Cube, Count Rows |
+| **Aggregate** | Group By, Rollup, Cube, Count Rows, **Window Aggregate** (SUM / AVG / COUNT / MIN / MAX OVER a window, keeps every row) |
 | **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti |
 | **Set operations** | Union, Union All, Intersect, Except / Minus |
 | **Window** | Row Number, Rank, Dense Rank, Lead, Lag, First Value, Last Value, NTile |
@@ -114,22 +119,31 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 | **Numeric** | Round, Modulo, Absolute, Logarithm, Power, Square Root |
 | **JSON / nested** | Parse JSON, Stringify, Flatten, JSONPath Extract, Merge Objects |
 | **Array** | Explode / Unnest, Collect List, Element At, Contains, Array Distinct |
-| **Pivot / shape** | Pivot (rows to columns) |
+| **Pivot / shape** | Pivot, **Unpivot**, **Denormalize** (group + delimited cells), **Normalize** (explode delimited / array column), **Transpose** |
+| **CDC / SCD** | **Diff Detect** (tag inserted / updated / deleted rows vs a previous snapshot), **SCD Type 1**, **SCD Type 2** (versioned history with valid_from / valid_to / is_current), **Merge / Upsert** |
+| **AI / Search** | **Vector Similarity Search** (cosine / L2 / inner product over FLOAT[N] embeddings via `vss`, optional top-K), **Full-Text Search** (BM25 over chosen columns via `fts`, optional top-K) |
 | **Debug** | Log Rows (pass through and print to Output for mid-pipeline inspection) |
 
-Planned transform families include Unpivot / Normalize, Window Aggregate, and CDC / SCD (diff detect, SCD Type 1 and 2, merge / upsert).
+The AI transforms that still need a model API (Embeddings, LLM Transform, Text Chunker, PII Redact, Classify, Semantic Dedupe) stay in **preview** until the API wiring lands.
 
 ### Data quality
 
-Validators split their input: passing rows continue on the main port, failures route to a **reject** port you can sink, count, or inspect.
+The whole group runs today. Validators split their input: passing rows continue on the main port, failures route to a **reject** port you can sink, count, or inspect.
 
-| Validator | Behavior | Status |
+| Component | Behavior | Status |
 |---|---|---|
 | **Not-Null Check** | Pass rows with no nulls in the chosen columns | Available |
 | **Range Check** | Pass rows inside a numeric range (inclusive or exclusive) | Available |
 | **Regex Match** | Pass rows whose column fully matches a pattern | Available |
 | **Uniqueness Check** | Pass the first row per key; route duplicates to reject | Available |
-| **Profiling and cleansing** | Column Profile, Histogram, Standardize, Fuzzy Deduplicate, Record Match | Planned |
+| **Schema Validate** | Reject rows where any expected column is null | Available |
+| **Column Profile** | Per-column stats (count, null %, distinct, min / max, quartiles) via `SUMMARIZE` | Available |
+| **Describe** | Column names + types of the input | Available |
+| **Histogram** | Value frequencies for one column, most-frequent first | Available |
+| **Standardize** | Trim + case-normalize + collapse inner whitespace, in place | Available |
+| **Fuzzy Deduplicate** | Keep the first row per near-duplicate cluster (Jaro-Winkler / Levenshtein) | Available |
+| **Record Match** | Self-join: emit pairs of rows above a similarity threshold, with a match score | Available |
+| **Address Cleanse** | Address parsing / normalization | Planned (needs external library) |
 
 ### Custom code and reusable SQL
 
@@ -144,11 +158,27 @@ Validators split their input: passing rows continue on the main port, failures r
 
 | Group | Connectors | Status |
 |---|---|---|
-| **Files** | CSV, TSV, Parquet (ZSTD), JSON, JSONL / NDJSON | Available |
+| **Files** | CSV, TSV, Parquet (ZSTD), JSON, JSONL / NDJSON, Excel (.xlsx) | Available |
+| **Geospatial files** | GeoJSON, GeoPackage, Shapefile, KML, GPX via GDAL | Available (lazy-loaded) |
+| **Lakehouse table formats** | Apache Iceberg (full table layout), DuckLake | Available |
 | **Embedded databases** | SQLite, DuckDB (write a table) | Available |
-| **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob via DuckDB `httpfs` | Available |
-| **Databases and warehouses** | PostgreSQL, MySQL, SQL Server, ClickHouse, Snowflake, BigQuery, Redshift | Planned |
+| **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB - write modes: **overwrite**, **append**, **truncate**, **upsert** (ON CONFLICT / ON DUPLICATE KEY UPDATE via passthrough) | Available (live CI for PG + MySQL) |
+| **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob via DuckDB `httpfs` (MinIO / R2 / B2 via endpoint) | Available |
+| **Cloud warehouses** | MotherDuck | Available |
+| **Cloud warehouses** | Snowflake, BigQuery, Redshift, Databricks SQL | Planned (need vendor SDKs) |
+| **Network relational DBs** | SQL Server, Oracle, ClickHouse, generic JDBC | Planned |
+| **Streaming** | Kafka, Pulsar, NATS, Kinesis, REST / Webhook / GraphQL | Planned |
+| **NoSQL** | MongoDB, Redis, Elasticsearch, OpenSearch | Planned |
 | **Vector / AI databases** | pgvector, Pinecone, Qdrant, Weaviate, Chroma, Milvus, LanceDB | Preview |
+
+### Control flow
+
+| Component | What it does | Status |
+|---|---|---|
+| **Replicate / Tee** | Send the same data to multiple downstream outputs | Available |
+| **Merge Streams** | Concatenate multiple input streams (UNION ALL) | Available |
+| **Switch / Conditional Split** | Route rows to `case_1..N` outputs by boolean condition (first match wins); rows that don't match any condition fall to a `default` output | Available |
+| **Iterate / For Each / Wait / Schedule / Throttle / Retry / Dead Letter / Try-Catch / Run Pipeline / Trigger / Checkpoint** | Runtime orchestration features | Planned (engine-runtime, not pure SQL) |
 
 ### Orchestration and workspace
 
@@ -157,7 +187,7 @@ Validators split their input: passing rows continue on the main port, failures r
 | **Run feedback** | Streaming run events light nodes up stage by stage, with per-node row counts, a real mid-query cancel, and run history. |
 | **Schedules** | Cron, fixed-interval, and file-watch triggers, driven by an in-process scheduler. |
 | **Context variables** | Per-environment variables; bind any field to one via a Manual / Context dropdown, or reference `${var}` inline. Resolved at run time. |
-| **Cloud credentials** | Saved S3 / GCS / Azure connections become DuckDB SECRETs; cloud reads and writes go through `httpfs`. |
+| **Cloud credentials** | Saved S3 / GCS / Azure connections become DuckDB SECRETs; cloud reads and writes go through `httpfs`. S3-compatible endpoints (MinIO / R2 / B2) supported via `ENDPOINT` + `URL_STYLE`. |
 | **Workspace** | Pipelines, connections, contexts, documents, and routines persist per-pipeline as plain JSON and Markdown files in a folder you choose. |
 
 ---
@@ -166,13 +196,14 @@ Validators split their input: passing rows continue on the main port, failures r
 
 Models inherit the quality of their inputs. RAG indexes, embedding stores, and training sets quietly accumulate duplicates, nulls, malformed rows, mixed encodings, and inconsistent schemas. Duckle is built to scrub that data before it lands in a vector store:
 
-- **Deduplicate** with exact Distinct and Uniqueness checks today, with a vector-similarity **Semantic Dedupe** in preview.
+- **Deduplicate** with exact Distinct, Uniqueness, and **Fuzzy Deduplicate** (Jaro-Winkler / Levenshtein); use **Record Match** to find near-duplicate pairs with a similarity score.
+- **Profile + describe** every column up front (Column Profile, Describe, Histogram) so issues surface before they reach a model.
 - **Validate and filter** malformed, empty, or out-of-range records and route failures to a reject port.
-- **Normalize** types, encodings, casing, and null handling across messy sources.
-- **Prepare for retrieval** with a dedicated AI transform group: Embeddings, LLM Transform, Text Chunker, PII Redact, Classify, and Semantic Dedupe.
-- **Land it in your store** with Vector / AI Database connectors: pgvector, Pinecone, Qdrant, Weaviate, Chroma, Milvus, and LanceDB.
+- **Normalize** types, encodings, casing, and null handling across messy sources (Standardize, Cast, regex / string transforms).
+- **Retrieve with both halves of hybrid search**, locally, no model API required: **Vector Similarity Search** (cosine / L2 / inner product over FLOAT[N] embeddings) and **Full-Text Search** (BM25 over chosen columns). Top-K supported on both.
+- **Land it in your store** - relational sinks (PostgreSQL, MySQL, MariaDB, CockroachDB) write with `upsert` (ON CONFLICT) so vector tables stay idempotent. Vector-DB API connectors (Pinecone, Qdrant, Weaviate, Chroma, Milvus, LanceDB) stay preview pending real SDK integration.
 
-> The AI transforms and Vector / AI Database connectors are **preview** components: you can drag, wire, and configure them now (provider, collection, embedding column, distance metric). Their execution is landing engine-by-engine. Everything in the clean-and-export path (validate, normalize, dedupe, write Parquet or JSON your store ingests) runs today.
+> The AI transforms that still need a model API (Embeddings, LLM Transform, Text Chunker, PII Redact, Classify, Semantic Dedupe) are **preview**: you can drag, wire, and configure them now (provider, collection, embedding column, distance metric). Their execution is landing engine-by-engine. The retrieval pair (Vector Similarity Search + Full-Text Search) is **available today** through DuckDB's `vss` and `fts` extensions - no API key required.
 
 ---
 
@@ -182,11 +213,19 @@ Duckle ships a thin shell and installs its engine on first launch, which is why 
 
 | Engine | Role | Status |
 |---|---|---|
-| **DuckDB** | Default execution engine: analytics, file formats, cloud reads, SQL pushdown. | Working |
+| **DuckDB** | Default execution engine: analytics, file formats, cloud reads, SQL pushdown. Tracking **v1.5.3** (latest stable). | Working |
 | **SlothDB** | Alternate embedded analytical engine ([SouravRoy-ETL/slothdb](https://github.com/SouravRoy-ETL/slothdb)), installed the same way and selectable per pipeline. | Installable |
 | **Native** | In-process Rust streaming / incremental engine. | Planned |
 
 DuckDB is the default. **SlothDB is a drop-in alternate engine**: install it from the same guided first-run screen and switch to it from the engine selector in the toolbar, with no change to your pipeline. Both downloadable engines install with a progress bar and no manual setup.
+
+### First-launch extension pre-fetch
+
+When the first-launch installer downloads the DuckDB CLI it also pre-fetches the extensions Duckle uses, with per-extension progress in the install modal, so the first time you touch a Postgres source or an Iceberg table there is no surprise network hop mid-pipeline:
+
+`httpfs` (S3 / GCS / HTTP), `azure` (Azure Blob native), `sqlite`, `postgres`, `mysql`, `excel`, `iceberg`, `delta`, `ducklake`, `vss`, `fts`.
+
+`spatial` is lazy-loaded (~50 MB GDAL bundle) - it installs on first use of a geospatial source/sink to keep the initial download small. `avro` stays preview until the community extension publishes a v1.4+ build.
 
 ---
 
