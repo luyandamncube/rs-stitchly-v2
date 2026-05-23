@@ -308,6 +308,7 @@ export const PALETTE: Category[] = [
                     xf('substring', 'Substring', 'available'),
                     xf('format', 'Format String', 'available'),
                     xf('hash', 'Hash', 'available', 'Hash a column (md5 / sha1 / sha256) for anonymization or deterministic IDs'),
+                    xf('ip.parse', 'IP Parse', 'available', 'Extract host / family / netmask / broadcast from IP or CIDR text via the inet extension'),
                 ],
             },
             {

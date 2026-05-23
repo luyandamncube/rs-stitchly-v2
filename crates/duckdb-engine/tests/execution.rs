@@ -2263,6 +2263,57 @@ fn geo_distance_computes_point_distance() {
 }
 
 #[test]
+fn ip_parse_extracts_host_and_family() {
+    // inet is a small built-in extension; no env gate. Tests both that
+    // the prelude LOADs inet (a fresh CLI process has no inet symbols
+    // until then) and that the `kind` prop dispatches to the right
+    // function (host vs family).
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "ips.csv",
+        "id,addr\n1,10.0.0.1/24\n2,192.168.1.5\n3,::1\n",
+    );
+    let host_out = out_path(tmp.path(), "host.csv");
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("p", "xf.ip.parse", json!({ "column": "addr", "kind": "host", "outputColumn": "h" })),
+            node("k", "snk.csv", json!({ "path": host_out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "p"), main_edge("e2", "p", "k")]),
+    ));
+    assert_eq!(r1.status, "ok", "ip host failed: {:?}", r1.error);
+    let host1 = scalar_string(&format!(
+        "SELECT h FROM read_csv_auto('{}') WHERE id = 1",
+        host_out
+    ));
+    assert_eq!(host1, "10.0.0.1");
+
+    let fam_out = out_path(tmp.path(), "fam.csv");
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("p", "xf.ip.parse", json!({ "column": "addr", "kind": "family", "outputColumn": "f" })),
+            node("k", "snk.csv", json!({ "path": fam_out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "p"), main_edge("e2", "p", "k")]),
+    ));
+    assert_eq!(r2.status, "ok", "ip family failed: {:?}", r2.error);
+    let v4 = scalar_string(&format!(
+        "SELECT CAST(f AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
+        fam_out
+    ));
+    let v6 = scalar_string(&format!(
+        "SELECT CAST(f AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 3",
+        fam_out
+    ));
+    assert_eq!(v4, "4");
+    assert_eq!(v6, "6");
+}
+
+#[test]
 fn pg_pgvector_roundtrip_through_postgres_attach() {
     // Lives in the CI postgres-integration job (pgvector/pgvector:pg16
     // image, so CREATE EXTENSION vector is preinstalled). Local skip is

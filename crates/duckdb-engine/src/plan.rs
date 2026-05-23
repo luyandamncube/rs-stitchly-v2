@@ -576,6 +576,7 @@ fn build_view_sql(
         "xf.regex" | "xf.trim" | "xf.case" | "xf.length" | "xf.substring" | "xf.concat"
         | "xf.split" | "xf.format" => build_string(inputs, props, component_id),
         "xf.hash" => build_hash(inputs, props),
+        "xf.ip.parse" => build_ip_parse(inputs, props),
         "xf.geo.distance" => build_geo_distance(inputs, props),
         "xf.geo.buffer" => build_geo_buffer(inputs, props),
         "xf.num.round" | "xf.num.abs" | "xf.num.mod" | "xf.num.power" | "xf.num.sqrt"
@@ -2497,6 +2498,10 @@ fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
         "src.spatial" | "snk.spatial" | "xf.geo.distance" | "xf.geo.buffer" => {
             return "INSTALL spatial; LOAD spatial; ".into();
         }
+        // inet is a small built-in extension. INSTALL is a no-op once
+        // the extension is bundled, but keeping it explicit means a
+        // fresh CLI cache still works without the first-launch fetch.
+        "xf.ip.parse" => return "INSTALL inet; LOAD inet; ".into(),
         _ => {}
     }
     let db = match string_prop(props, "database").filter(|s| !s.is_empty()) {
@@ -2872,6 +2877,38 @@ fn build_hash(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> 
     };
     Ok(format!(
         "SELECT *, {fn_name}(CAST({col} AS VARCHAR)) AS {out} FROM {up}",
+        col = quote_ident(&column),
+        out = quote_ident(&output),
+        up = quote_ident(upstream)
+    ))
+}
+
+/// IP Parse: CAST a text/IP column to INET and extract a single
+/// component via the inet extension. `kind` picks which piece comes
+/// out (host / family / broadcast / netmask / hostmask / masklen /
+/// network), so one row gives one output column and the upstream
+/// schema is untouched. The CAST handles both bare addresses
+/// (1.2.3.4 / ::1) and CIDR notation (10.0.0.0/8).
+fn build_ip_parse(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.ip.parse"))?;
+    let column = string_prop(props, "column")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "IP Parse needs an input column".to_string())?;
+    let kind = string_prop(props, "kind").unwrap_or_else(|| "host".into());
+    let fn_name = match kind.as_str() {
+        "family" => "family",
+        "broadcast" => "broadcast",
+        "netmask" => "netmask",
+        "hostmask" => "hostmask",
+        "masklen" => "masklen",
+        "network" => "network",
+        _ => "host",
+    };
+    let output = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_{}", column, fn_name));
+    Ok(format!(
+        "SELECT *, {fn_name}(CAST({col} AS INET)) AS {out} FROM {up}",
         col = quote_ident(&column),
         out = quote_ident(&output),
         up = quote_ident(upstream)

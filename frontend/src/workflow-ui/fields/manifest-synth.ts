@@ -1613,6 +1613,32 @@ function synthWindowTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthStringTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.ip.parse') {
+        return base(comp, [
+            {
+                label: 'IP Parse',
+                fields: [
+                    { key: 'column', label: 'IP / CIDR column', kind: 'column', required: true },
+                    {
+                        key: 'kind',
+                        label: 'Extract',
+                        kind: 'select',
+                        defaultValue: 'host',
+                        options: [
+                            { label: 'Host (address without mask)', value: 'host' },
+                            { label: 'Family (4 or 6)', value: 'family' },
+                            { label: 'Broadcast address', value: 'broadcast' },
+                            { label: 'Netmask', value: 'netmask' },
+                            { label: 'Hostmask', value: 'hostmask' },
+                            { label: 'Mask length (bits)', value: 'masklen' },
+                            { label: 'Network (address & netmask)', value: 'network' },
+                        ],
+                    },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_<kind>' },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'xf.hash') {
         return base(comp, [
             {
