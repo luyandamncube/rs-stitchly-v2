@@ -292,6 +292,12 @@ impl DuckdbEngine {
 
         let mut nodes: std::collections::BTreeMap<String, NodeRunStatus> = Default::default();
         let mut overall_error: Option<String> = None;
+        // ctl.try installs a fallback path here. On any subsequent
+        // stage failure, the engine runs it as a side effect before
+        // surfacing the original error. Cleared/replaced by the most
+        // recent ctl.try (no stacked nesting yet - DAG block refactor
+        // would add that).
+        let mut installed_fallback: Option<String> = None;
         let mut was_cancelled = false;
         let mut preview: Vec<NodePreview> = Vec::new();
 
@@ -496,9 +502,29 @@ impl DuckdbEngine {
                         duration_ms: elapsed_ms,
                         error: Some(msg.clone()),
                     });
+                    // ctl.try fallback: if an upstream ctl.try installed
+                    // a recovery pipeline, run it as a side effect before
+                    // we surface the original error. Take() so we only
+                    // fire once per fallback installation.
+                    if let Some(fallback) = installed_fallback.take() {
+                        if let Err(fe) = self.run_subpipeline(&fallback) {
+                            overall_error.get_or_insert(format!(
+                                "{}: {} (and fallback '{}' also failed: {})",
+                                stage.label, msg, fallback, fe
+                            ));
+                            break;
+                        }
+                        // Fallback ran cleanly; still propagate the
+                        // original error - this is "side-effect" semantics.
+                    }
                     overall_error.get_or_insert(format!("{}: {}", stage.label, msg));
                     break;
                 }
+            }
+            // ctl.try sets install_fallback_path on the stage itself;
+            // after a successful run, install it for subsequent stages.
+            if let Some(ref p) = stage.install_fallback_path {
+                installed_fallback = Some(p.clone());
             }
         }
 

@@ -590,7 +590,7 @@ export const PALETTE: Category[] = [
                 id: 'ctl.errors',
                 label: 'Error Handling',
                 components: [
-                    ctl('try', 'Try / Catch', 'planned'),
+                    ctl('try', 'Try / Catch', 'available', 'Installs a fallback pipeline. If any downstream stage in this execution fails, the fallback runs as a side effect before the original error surfaces - useful for notifications, rollbacks, cleanup. Slice of the DAG-block refactor; true continuation-style try/catch needs the multi-week refactor (see docs/dag-block-refactor.md).'),
                     ctl('retry', 'Retry', 'planned'),
                     ctl('deadletter', 'Dead Letter Queue', 'available', 'Terminal sink for rejected rows - parquet or csv at a configurable path; conventionally wired to an upstream node\'s reject port'),
                 ],

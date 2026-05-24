@@ -3940,6 +3940,101 @@ fn memory_limit_pragma_applied_without_breaking_normal_query() {
 }
 
 #[test]
+fn ctl_try_fires_fallback_when_downstream_stage_fails() {
+    // Parent pipeline: src.csv -> ctl.try(installs fallback) ->
+    // failing stage. Failing stage triggers the fallback (which writes
+    // a marker CSV), then the pipeline surfaces the original error.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Fallback pipeline writes a 'recovery happened' marker CSV.
+    let marker_in = write_file(tmp.path(), "marker_in.csv", "ev\nrolled-back\n");
+    let marker_out = out_path(tmp.path(), "marker.csv");
+    let fallback_doc_value = json!({
+        "nodes": [
+            node("s", "src.csv", json!({ "path": marker_in, "hasHeader": true })),
+            node("k", "snk.csv", json!({ "path": marker_out, "hasHeader": true })),
+        ],
+        "edges": [main_edge("e", "s", "k")],
+    });
+    let fallback_path = out_path(tmp.path(), "fallback.json");
+    std::fs::write(&fallback_path, serde_json::to_string(&fallback_doc_value).unwrap()).unwrap();
+
+    // Parent: a failing transform comes AFTER ctl.try installs the
+    // fallback. xf.regex against a non-existent column reliably fails.
+    let parent_in = write_file(tmp.path(), "in.csv", "x\n1\n");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": parent_in, "hasHeader": true })),
+            node("t", "ctl.try", json!({ "fallbackPipelineRef": fallback_path })),
+            node("f", "xf.regex", json!({
+                "column": "no_such_column",
+                "pattern": "x",
+                "replacement": "y"
+            })),
+        ]),
+        json!([
+            main_edge("e1", "s", "t"),
+            main_edge("e2", "t", "f"),
+        ]),
+    ));
+    assert_ne!(r.status, "ok", "parent should surface the original failure");
+
+    // The fallback pipeline should have written its marker CSV
+    // (side-effect proof that ctl.try fired).
+    assert!(
+        std::path::Path::new(&marker_out).exists(),
+        "expected fallback to have written marker CSV at {}",
+        marker_out
+    );
+    let marker_n = count(&format!("read_csv_auto('{}')", marker_out));
+    assert_eq!(marker_n, 1, "fallback marker should have 1 row");
+}
+
+#[test]
+fn ctl_try_does_not_fire_when_no_failure() {
+    // Same parent but no failing stage - fallback should NOT run.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let marker_out = out_path(tmp.path(), "marker.csv");
+    let fallback_doc_value = json!({
+        "nodes": [
+            node("s", "src.csv", json!({
+                "path": write_file(tmp.path(), "m.csv", "ev\nrun\n"),
+                "hasHeader": true
+            })),
+            node("k", "snk.csv", json!({ "path": marker_out.clone(), "hasHeader": true })),
+        ],
+        "edges": [main_edge("e", "s", "k")],
+    });
+    let fallback_path = out_path(tmp.path(), "fallback.json");
+    std::fs::write(&fallback_path, serde_json::to_string(&fallback_doc_value).unwrap()).unwrap();
+
+    let parent_in = write_file(tmp.path(), "in.csv", "x\n1\n2\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": parent_in, "hasHeader": true })),
+            node("t", "ctl.try", json!({ "fallbackPipelineRef": fallback_path })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([
+            main_edge("e1", "s", "t"),
+            main_edge("e2", "t", "k"),
+        ]),
+    ));
+    assert_eq!(r.status, "ok", "happy path should succeed: {:?}", r.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 2);
+    // Fallback should NOT have run.
+    assert!(
+        !std::path::Path::new(&marker_out).exists(),
+        "fallback shouldn't run on happy path; marker exists at {}",
+        marker_out
+    );
+}
+
+#[test]
 fn ctl_runpipeline_executes_referenced_pipeline_as_side_effect() {
     // Write a tiny sub-pipeline that materializes a CSV at a known
     // path; the parent pipeline runs ctl.runpipeline against that

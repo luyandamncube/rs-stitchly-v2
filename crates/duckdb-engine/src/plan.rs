@@ -55,6 +55,13 @@ pub struct Stage {
     /// etc.) without the full block-scope DAG refactor that
     /// ctl.iterate / ctl.foreach / ctl.try need.
     pub run_pipeline_path: Option<String>,
+    /// ctl.try: when set, the executor installs this path as a
+    /// fallback pipeline. If any subsequent stage in the same
+    /// execution fails, the fallback runs as a side effect before
+    /// the original error surfaces. Useful for notifications,
+    /// rollbacks, cleanup. NOT a true block-scoped try with
+    /// continuation - that needs the DAG refactor.
+    pub install_fallback_path: Option<String>,
     /// HTTP per-row sink (snk.webhook / snk.rest). When set, the
     /// executor materializes the upstream view and dispatches requests
     /// via ureq; stage SQL is empty (no DuckDB write).
@@ -770,6 +777,7 @@ fn build_stage(
     let mut text_search: Option<TextSearchSpec> = None;
     let mut webhook: Option<WebhookSpec> = None;
     let mut run_pipeline_path: Option<String> = None;
+    let mut install_fallback_path: Option<String> = None;
     let mut snowflake_sink: Option<SnowflakeSinkSpec> = None;
     let mut databricks_sink: Option<DatabricksSinkSpec> = None;
     let mut snowflake_source: Option<SnowflakeSourceSpec> = None;
@@ -1284,6 +1292,30 @@ fn build_stage(
                 Some(from_view.to_string()),
             )
         }
+    } else if component_id == "ctl.try" {
+        // Side-effect fallback installer: pass through upstream
+        // unchanged; on any subsequent stage failure, the engine
+        // runs the fallback pipeline as a side effect before the
+        // original error surfaces. Not the full block-scoped try
+        // with continuation - that needs the DAG-engine refactor
+        // (see docs/dag-block-refactor.md).
+        let path = string_prop(&props, "fallbackPipelineRef")
+            .or_else(|| string_prop(&props, "fallbackPath"))
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: fallbackPipelineRef (path to a recovery pipeline) required", component_id)))?;
+        install_fallback_path = Some(path);
+        let sql = match inputs.main() {
+            Some(from_view) => format!(
+                "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
+                quote_ident(&node.id),
+                quote_ident(from_view)
+            ),
+            None => format!(
+                "CREATE OR REPLACE TABLE {} AS SELECT 'try-installed' AS status WHERE 1=0",
+                quote_ident(&node.id)
+            ),
+        };
+        (sql, StageKind::View, None)
     } else if component_id == "ctl.runpipeline" || component_id == "ctl.trigger" {
         // Side-effect: read + execute the referenced pipeline file
         // before passing this node's upstream view through. Form
@@ -1803,6 +1835,7 @@ fn build_stage(
         upsert,
         text_search,
         run_pipeline_path,
+        install_fallback_path,
         webhook,
         snowflake_sink,
         databricks_sink,
