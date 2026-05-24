@@ -1154,6 +1154,7 @@ impl DuckdbEngine {
             .collect::<Vec<_>>()
             .join(", ");
         let qualified = format!("{}.{}", spec.keyspace, spec.table);
+        let cancel = self.cancel.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1173,6 +1174,9 @@ impl DuckdbEngine {
                     .map_err(|e| format!("connect: {}", e))?;
                 let mut total = 0_usize;
                 for row in &rows {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_string());
+                    }
                     let row_obj = row.as_object();
                     let vals: Vec<String> = cols
                         .iter()
@@ -1197,7 +1201,11 @@ impl DuckdbEngine {
                 }
                 Ok::<usize, String>(total)
             })
-            .map_err(|e| EngineError::Query(format!("cassandra sink: {}", e)))?;
+            .map_err(|e| if e == "cancelled" {
+                EngineError::Cancelled
+            } else {
+                EngineError::Query(format!("cassandra sink: {}", e))
+            })?;
         Ok(format!(
             "cassandra: inserted {} rows into {}.{}",
             total, spec.keyspace, spec.table
@@ -1944,6 +1952,7 @@ impl DuckdbEngine {
             .map(|c| ss_quote_ident(c))
             .collect::<Vec<_>>()
             .join(", ");
+        let cancel = self.cancel.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1971,6 +1980,9 @@ impl DuckdbEngine {
                     .map_err(|e| format!("tds handshake: {}", e))?;
                 let mut total = 0_usize;
                 for chunk in rows.chunks(spec.batch_size) {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".to_string());
+                    }
                     let values: Vec<String> = chunk
                         .iter()
                         .map(|row| {
@@ -2001,7 +2013,11 @@ impl DuckdbEngine {
                 }
                 Ok::<usize, String>(total)
             })
-            .map_err(|e| EngineError::Query(format!("sqlserver sink: {}", e)))?;
+            .map_err(|e| if e == "cancelled" {
+                EngineError::Cancelled
+            } else {
+                EngineError::Query(format!("sqlserver sink: {}", e))
+            })?;
         Ok(format!(
             "sqlserver: inserted {} rows into [{}].[{}].[{}]",
             total, spec.database, spec.schema, spec.table
@@ -2226,6 +2242,7 @@ impl DuckdbEngine {
     ) -> Result<String, EngineError> {
         let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
         let rows = self.run_rows(Some(db), &select)?;
+        let cancel = self.cancel.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2246,6 +2263,9 @@ impl DuckdbEngine {
             }
             let mut total = 0_usize;
             for chunk in rows.chunks(spec.batch_size) {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelled".into());
+                }
                 let docs: Vec<mongodb::bson::Document> = chunk
                     .iter()
                     .filter_map(|v| mongodb::bson::to_document(v).ok())
@@ -2265,7 +2285,11 @@ impl DuckdbEngine {
                 total, spec.database, spec.collection
             ))
         });
-        result.map_err(|e| EngineError::Query(format!("mongodb sink: {}", e)))
+        result.map_err(|e| if e == "cancelled" {
+            EngineError::Cancelled
+        } else {
+            EngineError::Query(format!("mongodb sink: {}", e))
+        })
     }
 
     /// MongoDB source: find() with optional filter + projection +
