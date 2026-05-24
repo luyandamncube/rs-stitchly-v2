@@ -852,6 +852,40 @@ function synthWarehouseSource(comp: ComponentDef): ComponentManifest {
 }
 
 function synthWarehouseSink(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'snk.databricks') {
+        return base(comp, [
+            {
+                label: 'Databricks workspace',
+                fields: [
+                    { key: 'workspace', label: 'Workspace host', kind: 'text', required: true, placeholder: 'dbc-xxxxxxxx.cloud.databricks.com' },
+                    { key: 'pat', label: 'Personal Access Token', kind: 'text', required: true, placeholder: '••••••••' },
+                    { key: 'warehouseId', label: 'SQL warehouse ID', kind: 'text', required: true, placeholder: '0a1b2c3d4e5f6g7h' },
+                ],
+            },
+            {
+                label: 'Destination',
+                fields: [
+                    { key: 'catalog', label: 'Catalog', kind: 'text', placeholder: 'main' },
+                    { key: 'schema', label: 'Schema', kind: 'text', placeholder: 'default' },
+                    { key: 'tableName', label: 'Table', kind: 'text', required: true, placeholder: 'orders' },
+                    {
+                        key: 'batchSize',
+                        label: 'Insert batch size',
+                        kind: 'integer',
+                        defaultValue: 1000,
+                        description: 'Rows per multi-row INSERT. Larger = fewer round-trips, but the API has a body-size limit.',
+                    },
+                    {
+                        key: 'waitTimeoutSeconds',
+                        label: 'Sync wait (seconds, max 50)',
+                        kind: 'integer',
+                        defaultValue: 30,
+                        description: 'How long to wait for each statement to complete. After this the statement continues async server-side; the engine treats it as success.',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'snk.snowflake') {
         return base(comp, [
             {

@@ -56,6 +56,9 @@ pub struct Stage {
     /// INSERT statements and POSTs them in batches to the configured
     /// account; stage SQL is empty.
     pub snowflake_sink: Option<SnowflakeSinkSpec>,
+    /// Databricks SQL Statement Execution API sink. Same pattern as
+    /// Snowflake; stage SQL stays empty.
+    pub databricks_sink: Option<DatabricksSinkSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -104,6 +107,30 @@ pub struct SnowflakeSinkSpec {
     pub role: Option<String>,
     pub table: String,
     pub batch_size: usize,
+}
+
+/// snk.databricks: Databricks SQL Statement Execution API insert.
+/// Same shape as Snowflake (multi-row INSERT per batch, Bearer PAT
+/// auth), but the body fields and identifier quoting are different:
+///   - URL: https://<workspace>/api/2.0/sql/statements/
+///   - body: { statement, warehouse_id, catalog?, schema?, wait_timeout,
+///            on_wait_timeout: "CONTINUE" }
+///   - identifiers quoted with backticks (`name`) instead of double quotes
+#[derive(Debug, Clone)]
+pub struct DatabricksSinkSpec {
+    pub from_view: String,
+    /// Workspace host (e.g. "dbc-xxxx.cloud.databricks.com"), used to
+    /// build https://<workspace>/api/2.0/sql/statements/.
+    pub workspace: String,
+    /// Optional endpoint override (full URL) - used by tests.
+    pub endpoint: Option<String>,
+    pub pat: String,
+    pub warehouse_id: String,
+    pub catalog: Option<String>,
+    pub schema: Option<String>,
+    pub table: String,
+    pub batch_size: usize,
+    pub wait_timeout_seconds: u64,
 }
 
 /// snk.webhook / snk.rest / vendor HTTP sinks: one HTTP POST/PUT
@@ -437,6 +464,7 @@ fn build_stage(
     let mut text_search: Option<TextSearchSpec> = None;
     let mut webhook: Option<WebhookSpec> = None;
     let mut snowflake_sink: Option<SnowflakeSinkSpec> = None;
+    let mut databricks_sink: Option<DatabricksSinkSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -624,6 +652,45 @@ fn build_stage(
                 serde_json::Value::String(collection),
             )],
             bulk_action: None,
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.databricks" {
+        // Databricks SQL Statement Execution API sink. PAT Bearer auth
+        // (standard for Databricks). Engine batches into multi-row
+        // INSERTs at batchSize rows each, identifiers backtick-quoted.
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let workspace = string_prop(&props, "workspace")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: workspace required (e.g. 'dbc-xxxx.cloud.databricks.com')", component_id)))?;
+        let pat = string_prop(&props, "pat")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: pat (Personal Access Token) required", component_id)))?;
+        let warehouse_id = string_prop(&props, "warehouseId")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: warehouseId required", component_id)))?;
+        let table = string_prop(&props, "tableName")
+            .or_else(|| string_prop(&props, "table"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: tableName required", component_id)))?;
+        databricks_sink = Some(DatabricksSinkSpec {
+            from_view: from_view.to_string(),
+            workspace,
+            endpoint: string_prop(&props, "endpoint").filter(|s| !s.is_empty()),
+            pat,
+            warehouse_id,
+            catalog: string_prop(&props, "catalog").filter(|s| !s.is_empty()),
+            schema: string_prop(&props, "schema").filter(|s| !s.is_empty()),
+            table,
+            batch_size: props
+                .get("batchSize")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0)
+                .unwrap_or(1000) as usize,
+            wait_timeout_seconds: props
+                .get("waitTimeoutSeconds")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0 && *n <= 50) // Databricks max is 50s
+                .unwrap_or(30),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.snowflake" {
@@ -896,6 +963,7 @@ fn build_stage(
         text_search,
         webhook,
         snowflake_sink,
+        databricks_sink,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,

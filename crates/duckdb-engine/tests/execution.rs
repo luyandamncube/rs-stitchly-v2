@@ -2444,6 +2444,89 @@ fn text_reverse_repeat_and_compare() {
 }
 
 #[test]
+fn snk_databricks_posts_multirow_insert() {
+    // Mock HTTP listener pretends to be Databricks's
+    // /api/2.0/sql/statements/. Verifies multi-row INSERT, Bearer PAT,
+    // backtick-quoted identifiers, and the body's warehouse_id +
+    // catalog + schema + wait_timeout fields.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(buf);
+            let body = b"{\"statement_id\":\"abc-123\",\"status\":{\"state\":\"SUCCEEDED\"}}";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n");
+    let endpoint = format!("http://127.0.0.1:{}/api/2.0/sql/statements/", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("db", "snk.databricks", json!({
+                "workspace": "dbc-test.cloud.databricks.com",
+                "endpoint": endpoint,
+                "pat": "dapi-secret-pat",
+                "warehouseId": "wh-abc123",
+                "catalog": "main",
+                "schema": "default",
+                "tableName": "users",
+                "waitTimeoutSeconds": 30
+            })),
+        ]),
+        json!([main_edge("e1", "s", "db")]),
+    ));
+    assert_eq!(r.status, "ok", "databricks sink failed: {:?}", r.error);
+
+    let req = rx.recv_timeout(Duration::from_secs(5)).expect("expected 1 Databricks request");
+    let _ = handle.join();
+    let body = String::from_utf8_lossy(&req).to_string();
+    assert!(body.contains("Bearer dapi-secret-pat"), "expected PAT bearer: {}", body);
+    // Identifiers backtick-quoted; SQL is JSON-string-escaped (backticks
+    // don't need escaping, but the literal sequence shows up as-is).
+    assert!(
+        body.contains("INSERT INTO `main`.`default`.`users`"),
+        "expected backtick-qualified INSERT: {}",
+        body
+    );
+    assert!(body.contains("'alice'") && body.contains("'bob'"), "expected row values: {}", body);
+    // Top-level Databricks request body keys.
+    assert!(body.contains(r#""warehouse_id":"wh-abc123""#), "expected warehouse_id: {}", body);
+    assert!(body.contains(r#""wait_timeout":"30s""#), "expected wait_timeout: {}", body);
+    assert!(body.contains(r#""on_wait_timeout":"CONTINUE""#), "expected on_wait_timeout: {}", body);
+}
+
+#[test]
 fn snk_snowflake_posts_multirow_insert() {
     // Mock HTTP listener pretends to be Snowflake's /api/v2/statements.
     // Verifies the engine sends a single multi-row INSERT for both rows

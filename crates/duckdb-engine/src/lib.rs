@@ -27,7 +27,7 @@ pub mod history;
 pub mod plan;
 pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
-use plan::{SnowflakeSinkSpec, WebhookSpec};
+use plan::{DatabricksSinkSpec, SnowflakeSinkSpec, WebhookSpec};
 
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -343,6 +343,10 @@ impl DuckdbEngine {
                     // batched at spec.batch_size and POSTed to /api/v2/
                     // statements with Bearer PAT auth.
                     self.run_snowflake_sink(&db_path, &secret_prefix, spec)
+                } else if let Some(spec) = stage.databricks_sink.as_ref() {
+                    // Databricks SQL Statement Execution API: same shape
+                    // as Snowflake, different body keys + backtick quoting.
+                    self.run_databricks_sink(&db_path, &secret_prefix, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -759,6 +763,130 @@ impl DuckdbEngine {
         ))
     }
 
+    /// Databricks SQL sink. Same multi-row INSERT batching as Snowflake;
+    /// difference is the URL shape, the body field names (warehouse_id,
+    /// catalog/schema, wait_timeout, on_wait_timeout), and identifier
+    /// quoting uses backticks instead of double quotes.
+    fn run_databricks_sink(
+        &self,
+        db: &Path,
+        secret_prefix: &str,
+        spec: &DatabricksSinkSpec,
+    ) -> Result<String, EngineError> {
+        let select = format!(
+            "{}SELECT * FROM {}",
+            secret_prefix,
+            plan::quote_ident(&spec.from_view)
+        );
+        let rows = self.run_rows(Some(db), &select)?;
+        if rows.is_empty() {
+            return Ok(format!("databricks: 0 rows to insert into {}", spec.table));
+        }
+        let cols: Vec<String> = match rows[0].as_object() {
+            Some(o) => o.keys().cloned().collect(),
+            None => return Err(EngineError::Query("databricks: upstream rows aren't JSON objects".into())),
+        };
+        // Build the qualified target. Catalog/schema both optional;
+        // Databricks accepts 2-part (schema.table) or 3-part naming
+        // (catalog.schema.table) when ambient catalog/schema is set in
+        // the request body.
+        let qualified = match (&spec.catalog, &spec.schema) {
+            (Some(c), Some(s)) => format!(
+                "{}.{}.{}",
+                db_quote_ident(c),
+                db_quote_ident(s),
+                db_quote_ident(&spec.table)
+            ),
+            (None, Some(s)) => format!(
+                "{}.{}",
+                db_quote_ident(s),
+                db_quote_ident(&spec.table)
+            ),
+            _ => db_quote_ident(&spec.table),
+        };
+        let cols_list = cols
+            .iter()
+            .map(|c| db_quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let url = spec.endpoint.clone().unwrap_or_else(|| {
+            format!("https://{}/api/2.0/sql/statements/", spec.workspace)
+        });
+        let mut total_inserted = 0_usize;
+        for chunk in rows.chunks(spec.batch_size) {
+            let values: Vec<String> = chunk
+                .iter()
+                .map(|row| {
+                    let row_obj = row.as_object();
+                    let vals: Vec<String> = cols
+                        .iter()
+                        .map(|c| {
+                            let v = row_obj
+                                .and_then(|o| o.get(c))
+                                .unwrap_or(&JsonValue::Null);
+                            json_to_sql_literal(v)
+                        })
+                        .collect();
+                    format!("({})", vals.join(", "))
+                })
+                .collect();
+            let stmt = format!(
+                "INSERT INTO {} ({}) VALUES {}",
+                qualified,
+                cols_list,
+                values.join(", ")
+            );
+            let mut body_obj = serde_json::Map::new();
+            body_obj.insert("statement".into(), JsonValue::String(stmt));
+            body_obj.insert(
+                "warehouse_id".into(),
+                JsonValue::String(spec.warehouse_id.clone()),
+            );
+            if let Some(c) = &spec.catalog {
+                body_obj.insert("catalog".into(), JsonValue::String(c.clone()));
+            }
+            if let Some(s) = &spec.schema {
+                body_obj.insert("schema".into(), JsonValue::String(s.clone()));
+            }
+            body_obj.insert(
+                "wait_timeout".into(),
+                JsonValue::String(format!("{}s", spec.wait_timeout_seconds)),
+            );
+            body_obj.insert(
+                "on_wait_timeout".into(),
+                JsonValue::String("CONTINUE".into()),
+            );
+            let body = serde_json::to_string(&JsonValue::Object(body_obj))
+                .unwrap_or_else(|_| "{}".into());
+            let req = ureq::post(&url)
+                .set("Authorization", &format!("Bearer {}", spec.pat))
+                .set("Content-Type", "application/json")
+                .set("Accept", "application/json");
+            match req.send_string(&body) {
+                Ok(_) => total_inserted += chunk.len(),
+                Err(ureq::Error::Status(code, response)) => {
+                    let body = response.into_string().unwrap_or_default();
+                    return Err(EngineError::Query(format!(
+                        "Databricks HTTP {} from {}: {}",
+                        code,
+                        url,
+                        body.chars().take(300).collect::<String>()
+                    )));
+                }
+                Err(e) => {
+                    return Err(EngineError::Query(format!(
+                        "Databricks HTTP transport to {}: {}",
+                        url, e
+                    )));
+                }
+            }
+        }
+        Ok(format!(
+            "databricks: inserted {} rows into {}",
+            total_inserted, spec.table
+        ))
+    }
+
     /// Full-Text Search runs in two CLI invocations sharing the same
     /// temp DB file. The first stages the upstream into a permanent
     /// table; the second builds the BM25 index and the final node
@@ -880,6 +1008,12 @@ fn now_nanos() -> u128 {
 /// doubled, and the identifier is treated case-sensitive.
 fn sf_quote_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// Databricks SQL identifier quoting: backticks, internal backticks
+/// doubled. Works in both Spark SQL and ANSI mode.
+fn db_quote_ident(s: &str) -> String {
+    format!("`{}`", s.replace('`', "``"))
 }
 
 /// Render a serde_json::Value as a Snowflake SQL literal.
