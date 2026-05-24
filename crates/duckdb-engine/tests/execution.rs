@@ -2528,9 +2528,9 @@ fn snk_databricks_posts_multirow_insert() {
 
 #[test]
 fn snk_snowflake_jwt_auth_signs_request() {
-    // Generates a fresh 1024-bit RSA key (small for test speed; the
-    // signing path is the same as 2048-bit), uses it as Snowflake's
-    // JWT-mode private key, and asserts:
+    // Generates a fresh 2048-bit RSA key (Snowflake / ring both reject
+    // smaller keys). Adds ~1s to test runtime but is the only size
+    // jsonwebtoken/ring will sign. Asserts:
     //  - Authorization header is "Bearer eyJ..." (JWT prefix)
     //  - X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT
     //  - JWT payload claims have iss = "ACCOUNT.USER.SHA256:<fp>" and
@@ -2546,7 +2546,7 @@ fn snk_snowflake_jwt_auth_signs_request() {
 
     let engine = engine_or_skip!();
     let mut rng = OsRng;
-    let private_key = RsaPrivateKey::new(&mut rng, 1024).expect("rsa keygen");
+    let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("rsa keygen");
     let pem = private_key
         .to_pkcs8_pem(LineEnding::LF)
         .expect("serialize pem")
