@@ -76,6 +76,10 @@ pub struct Stage {
     pub mongo_sink: Option<MongoSinkSpec>,
     /// MongoDB find() source (official driver + tokio block_on).
     pub mongo_source: Option<MongoSourceSpec>,
+    /// ClickHouse HTTP-API sink (POST INSERT INTO ... FORMAT JSONEachRow).
+    pub clickhouse_sink: Option<ClickHouseSinkSpec>,
+    /// ClickHouse HTTP-API source (POST SELECT ... FORMAT JSON).
+    pub clickhouse_source: Option<ClickHouseSourceSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -150,6 +154,37 @@ pub struct SnowflakeSourceSpec {
     pub schema: Option<String>,
     pub warehouse: Option<String>,
     pub role: Option<String>,
+    pub query: String,
+}
+
+/// snk.clickhouse: HTTP INSERT to a ClickHouse table.
+///   POST {endpoint}/?query=INSERT INTO {db}.{table} FORMAT JSONEachRow
+///   Body: NDJSON lines (one row per line)
+///   Auth: X-ClickHouse-User / X-ClickHouse-Key headers.
+/// No new deps - rides the existing ureq.
+#[derive(Debug, Clone)]
+pub struct ClickHouseSinkSpec {
+    pub from_view: String,
+    /// Full endpoint like "http://localhost:8123" or "https://...".
+    pub endpoint: String,
+    pub database: Option<String>,
+    pub table: String,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub batch_size: usize,
+}
+
+/// src.clickhouse: HTTP SELECT against ClickHouse.
+///   POST {endpoint}/ with body "SELECT ... FORMAT JSON"
+///   Response: { "meta": [...], "data": [...], "rows": N }
+#[derive(Debug, Clone)]
+pub struct ClickHouseSourceSpec {
+    pub node_id: String,
+    pub endpoint: String,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    /// Either a free SQL `query` or (table) which becomes SELECT * FROM table.
     pub query: String,
 }
 
@@ -615,6 +650,8 @@ fn build_stage(
     let mut elastic_source: Option<ElasticSourceSpec> = None;
     let mut mongo_sink: Option<MongoSinkSpec> = None;
     let mut mongo_source: Option<MongoSourceSpec> = None;
+    let mut clickhouse_sink: Option<ClickHouseSinkSpec> = None;
+    let mut clickhouse_source: Option<ClickHouseSourceSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -841,6 +878,29 @@ fn build_stage(
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0 && *n <= 50) // Databricks max is 50s
                 .unwrap_or(30),
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.clickhouse" {
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let endpoint = string_prop(&props, "endpoint")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: endpoint required (e.g. 'http://localhost:8123')", component_id)))?;
+        let table = string_prop(&props, "tableName")
+            .or_else(|| string_prop(&props, "table"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: tableName required", component_id)))?;
+        clickhouse_sink = Some(ClickHouseSinkSpec {
+            from_view: from_view.to_string(),
+            endpoint,
+            database: string_prop(&props, "database").filter(|s| !s.is_empty()),
+            table,
+            user: string_prop(&props, "user").filter(|s| !s.is_empty()),
+            password: string_prop(&props, "password").filter(|s| !s.is_empty()),
+            batch_size: props
+                .get("batchSize")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0)
+                .unwrap_or(10000) as usize,
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.mongodb" {
@@ -1129,6 +1189,31 @@ fn build_stage(
                 .unwrap_or(100),
         });
         (String::new(), StageKind::View, None)
+    } else if component_id == "src.clickhouse" {
+        let endpoint = string_prop(&props, "endpoint")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: endpoint required", component_id)))?;
+        let database = string_prop(&props, "database").filter(|s| !s.is_empty());
+        let query = string_prop(&props, "query")
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                let table = string_prop(&props, "tableName").filter(|s| !s.is_empty())?;
+                let qualified = match &database {
+                    Some(d) => format!("`{}`.`{}`", d, table),
+                    None => format!("`{}`", table),
+                };
+                Some(format!("SELECT * FROM {}", qualified))
+            })
+            .ok_or_else(|| EngineError::Config(format!("{}: query or tableName required", component_id)))?;
+        clickhouse_source = Some(ClickHouseSourceSpec {
+            node_id: node.id.clone(),
+            endpoint,
+            database,
+            user: string_prop(&props, "user").filter(|s| !s.is_empty()),
+            password: string_prop(&props, "password").filter(|s| !s.is_empty()),
+            query,
+        });
+        (String::new(), StageKind::View, None)
     } else if component_id == "src.mongodb" {
         let uri = string_prop(&props, "uri")
             .or_else(|| string_prop(&props, "connectionString"))
@@ -1356,6 +1441,8 @@ fn build_stage(
         elastic_source,
         mongo_sink,
         mongo_source,
+        clickhouse_sink,
+        clickhouse_source,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,

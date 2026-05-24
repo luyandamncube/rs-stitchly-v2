@@ -755,6 +755,21 @@ function synthLakehouseSink(comp: ComponentDef): ComponentManifest {
 }
 
 function synthDbSource(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'src.clickhouse') {
+        return base(comp, [
+            {
+                label: 'ClickHouse',
+                fields: [
+                    { key: 'endpoint', label: 'Endpoint', kind: 'text', required: true, placeholder: 'http://localhost:8123' },
+                    { key: 'user', label: 'User', kind: 'text', placeholder: 'default' },
+                    { key: 'password', label: 'Password', kind: 'text', placeholder: '••••••••' },
+                    { key: 'database', label: 'Database (optional)', kind: 'text' },
+                    { key: 'tableName', label: 'Table (for SELECT *)', kind: 'text', placeholder: 'events' },
+                    { key: 'query', label: 'Or custom SQL', kind: 'expression', rows: 4, placeholder: 'SELECT * FROM events WHERE ...' },
+                ],
+            },
+        ]);
+    }
     return base(comp, [
         { label: 'Connection', fields: dbConnectionFields(comp.id) },
         { label: 'Query', fields: dbReadFields() },
@@ -762,6 +777,21 @@ function synthDbSource(comp: ComponentDef): ComponentManifest {
 }
 
 function synthDbSink(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'snk.clickhouse') {
+        return base(comp, [
+            {
+                label: 'ClickHouse',
+                fields: [
+                    { key: 'endpoint', label: 'Endpoint', kind: 'text', required: true, placeholder: 'http://localhost:8123' },
+                    { key: 'user', label: 'User', kind: 'text', placeholder: 'default' },
+                    { key: 'password', label: 'Password', kind: 'text', placeholder: '••••••••' },
+                    { key: 'database', label: 'Database', kind: 'text' },
+                    { key: 'tableName', label: 'Table', kind: 'text', required: true, placeholder: 'events' },
+                    { key: 'batchSize', label: 'Batch size', kind: 'integer', defaultValue: 10000 },
+                ],
+            },
+        ], 'upstream');
+    }
     return base(
         comp,
         [

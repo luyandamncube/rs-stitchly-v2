@@ -2444,6 +2444,74 @@ fn text_reverse_repeat_and_compare() {
 }
 
 #[test]
+fn snk_clickhouse_emits_jsoneachrow_to_insert_endpoint() {
+    // Mock /?query=... endpoint; the engine should POST NDJSON to it.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n");
+    let endpoint = format!("http://127.0.0.1:{}", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("c", "snk.clickhouse", json!({
+                "endpoint": endpoint,
+                "database": "default",
+                "tableName": "users",
+                "user": "ch", "password": "p"
+            })),
+        ]),
+        json!([main_edge("e", "s", "c")]),
+    ));
+    assert_eq!(r.status, "ok", "clickhouse sink failed: {:?}", r.error);
+
+    let req = rx.recv_timeout(Duration::from_secs(5)).expect("expected 1 CH request");
+    let _ = handle.join();
+    let body = String::from_utf8_lossy(&req).to_string();
+    // URL should have the urlencoded INSERT statement.
+    assert!(body.contains("/?query="), "expected query in URL: {}", body.lines().next().unwrap_or(""));
+    assert!(body.contains("INSERT") && body.contains("default") && body.contains("users"),
+        "expected URL-encoded INSERT INTO default.users: {}", body);
+    assert!(body.contains("FORMAT") && body.contains("JSONEachRow"),
+        "expected JSONEachRow in URL: {}", body);
+    assert!(body.contains("X-ClickHouse-User: ch"), "expected user header: {}", body);
+    assert!(body.contains("X-ClickHouse-Key: p"), "expected key header: {}", body);
+    // NDJSON body: each row on its own line.
+    assert!(body.contains("{\"id\":1,\"name\":\"alice\"}"), "expected alice row: {}", body);
+    assert!(body.contains("{\"id\":2,\"name\":\"bob\"}"), "expected bob row: {}", body);
+}
+
+#[test]
 fn snk_and_src_mongodb_roundtrip_via_real_uri() {
     // Env-gated like the postgres / mysql / minio tests. Set
     // DUCKLE_MONGO_URI to a working mongodb URI (e.g. mongodb://127.0.0.1:27017)

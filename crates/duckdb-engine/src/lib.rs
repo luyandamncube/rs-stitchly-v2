@@ -28,8 +28,9 @@ pub mod plan;
 pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
 use plan::{
-    DatabricksSinkSpec, DatabricksSourceSpec, ElasticSourceSpec, MongoSinkSpec, MongoSourceSpec,
-    RestSourceSpec, SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec, WebhookSpec,
+    ClickHouseSinkSpec, ClickHouseSourceSpec, DatabricksSinkSpec, DatabricksSourceSpec,
+    ElasticSourceSpec, MongoSinkSpec, MongoSourceSpec, RestSourceSpec, SnowflakeAuth,
+    SnowflakeSinkSpec, SnowflakeSourceSpec, WebhookSpec,
 };
 
 #[derive(Debug, Error)]
@@ -370,6 +371,11 @@ impl DuckdbEngine {
                     self.run_mongo_sink(&db_path, spec)
                 } else if let Some(spec) = stage.mongo_source.as_ref() {
                     self.run_mongo_source(&db_path, spec)
+                } else if let Some(spec) = stage.clickhouse_sink.as_ref() {
+                    // ClickHouse HTTP sink: POST INSERT ... FORMAT JSONEachRow.
+                    self.run_clickhouse_sink(&db_path, spec)
+                } else if let Some(spec) = stage.clickhouse_source.as_ref() {
+                    self.run_clickhouse_source(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -793,6 +799,136 @@ impl DuckdbEngine {
         Ok(format!(
             "snowflake: inserted {} rows into {}",
             total_inserted, spec.table
+        ))
+    }
+
+    /// ClickHouse sink: HTTP POST to `?query=INSERT INTO db.table FORMAT
+    /// JSONEachRow` with NDJSON body. Batched at spec.batch_size rows.
+    fn run_clickhouse_sink(
+        &self,
+        db: &Path,
+        spec: &ClickHouseSinkSpec,
+    ) -> Result<String, EngineError> {
+        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
+        let rows = self.run_rows(Some(db), &select)?;
+        if rows.is_empty() {
+            return Ok(format!(
+                "clickhouse: 0 rows to insert into {}",
+                spec.table
+            ));
+        }
+        let qualified = match &spec.database {
+            Some(d) => format!("`{}`.`{}`", d, spec.table),
+            None => format!("`{}`", spec.table),
+        };
+        let base = format!(
+            "{}/?query={}",
+            spec.endpoint.trim_end_matches('/'),
+            urlencode_simple(&format!(
+                "INSERT INTO {} FORMAT JSONEachRow",
+                qualified
+            ))
+        );
+        let mut total = 0_usize;
+        for chunk in rows.chunks(spec.batch_size) {
+            // NDJSON body: one row per line.
+            let mut body = String::new();
+            for row in chunk {
+                let line = serde_json::to_string(row).unwrap_or_else(|_| "{}".into());
+                body.push_str(&line);
+                body.push('\n');
+            }
+            let mut req = ureq::post(&base)
+                .set("Content-Type", "application/x-ndjson");
+            if let Some(u) = &spec.user {
+                req = req.set("X-ClickHouse-User", u);
+            }
+            if let Some(p) = &spec.password {
+                req = req.set("X-ClickHouse-Key", p);
+            }
+            match req.send_string(&body) {
+                Ok(_) => total += chunk.len(),
+                Err(ureq::Error::Status(code, r)) => {
+                    let body = r.into_string().unwrap_or_default();
+                    return Err(EngineError::Query(format!(
+                        "ClickHouse HTTP {} on insert into {}: {}",
+                        code,
+                        qualified,
+                        body.chars().take(300).collect::<String>()
+                    )));
+                }
+                Err(e) => {
+                    return Err(EngineError::Query(format!(
+                        "ClickHouse HTTP transport: {}",
+                        e
+                    )));
+                }
+            }
+        }
+        Ok(format!(
+            "clickhouse: inserted {} rows into {}",
+            total, qualified
+        ))
+    }
+
+    /// ClickHouse source: POST the SELECT with FORMAT JSON appended; the
+    /// response has a top-level `data: [{...}]` array of row objects.
+    /// Materialize via the existing jsonobjects helper.
+    fn run_clickhouse_source(
+        &self,
+        db: &Path,
+        spec: &ClickHouseSourceSpec,
+    ) -> Result<String, EngineError> {
+        let url = format!("{}/", spec.endpoint.trim_end_matches('/'));
+        let q = if spec
+            .query
+            .to_uppercase()
+            .contains("FORMAT JSON")
+        {
+            spec.query.clone()
+        } else {
+            format!("{} FORMAT JSON", spec.query.trim())
+        };
+        let mut req = ureq::post(&url).set("Content-Type", "text/plain");
+        if let Some(u) = &spec.user {
+            req = req.set("X-ClickHouse-User", u);
+        }
+        if let Some(p) = &spec.password {
+            req = req.set("X-ClickHouse-Key", p);
+        }
+        if let Some(d) = &spec.database {
+            req = req.set("X-ClickHouse-Database", d);
+        }
+        let resp = match req.send_string(&q) {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                return Err(EngineError::Query(format!(
+                    "ClickHouse HTTP {} on query: {}",
+                    code,
+                    body.chars().take(300).collect::<String>()
+                )));
+            }
+            Err(e) => {
+                return Err(EngineError::Query(format!(
+                    "ClickHouse HTTP transport: {}",
+                    e
+                )));
+            }
+        };
+        let response: JsonValue = resp
+            .into_json()
+            .map_err(|e| EngineError::Query(format!("ClickHouse response not JSON: {}", e)))?;
+        let rows = response
+            .get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let count = rows.len();
+        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        Ok(format!(
+            "clickhouse: materialized {} rows into {}",
+            count, spec.node_id
         ))
     }
 
