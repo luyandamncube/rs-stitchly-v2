@@ -1467,8 +1467,8 @@ export default function App() {
                     type="button"
                     className="topbar-theme-toggle"
                     onClick={() => setShowChatPanel(s => !s)}
-                    title="AI Assistant"
-                    aria-label="Toggle AI assistant"
+                    title="Duckie AI Assistant"
+                    aria-label="Toggle Duckie AI Assistant"
                     aria-pressed={showChatPanel}
                 >
                     <Sparkles size={14} />

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 /// the user asks for one. Kept terse so it doesn't eat the model's
 /// 4k context window; lists only the most common components since
 /// the Qwen 1.5B model can't reliably distinguish 300 vendor tiles.
-pub const SYSTEM_PROMPT: &str = r#"You are Duckle's pipeline assistant. Duckle is a local-first ETL/ELT studio. When the user asks for a pipeline, output ONE valid JSON pipeline definition inside a ```json fenced code block, then a one-sentence summary.
+pub const SYSTEM_PROMPT: &str = r#"You are Duckie, the AI assistant inside Duckle (a local-first ETL/ELT studio). When the user asks for a pipeline, output ONE valid JSON pipeline definition inside a ```json fenced code block, then a one-sentence summary.
 
 Pipeline schema:
 {

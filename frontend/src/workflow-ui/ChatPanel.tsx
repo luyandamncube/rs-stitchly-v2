@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bot, Loader2, Send, Sparkles, X } from 'lucide-react';
+import { Download, Loader2, Send, Sparkles, X, Workflow } from 'lucide-react';
 import {
     chatExtractPipeline,
     chatSend,
+    engineInstall,
+    engineStatus,
     type ChatMessage,
+    type EngineStatus,
+    type InstallProgress,
 } from '../tauri-bridge';
 
 type Props = {
@@ -18,32 +22,70 @@ type Bubble = ChatMessage & {
     pipeline?: unknown;
 };
 
-/**
- * Chat sidebar for the local AI assistant. Streams tokens from the
- * llama-server subprocess via the chat_send Tauri command. When an
- * assistant message contains a fenced JSON pipeline block the panel
- * shows an "Insert into canvas" button.
- */
+type SetupState =
+    | { phase: 'checking' }
+    | { phase: 'not-installed'; engine: EngineStatus }
+    | { phase: 'installing'; progress: InstallProgress | null }
+    | { phase: 'ready' }
+    | { phase: 'install-failed'; error: string };
+
+const EXAMPLE_PROMPTS = [
+    'Read orders.csv, filter where status = "shipped", write to shipped.parquet',
+    'Pull GitHub issues from my repo and load them into a Postgres table',
+    'Embed the description column with OpenAI and dedupe near-duplicates',
+];
+
 export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
+    const [setup, setSetup] = useState<SetupState>({ phase: 'checking' });
     const [messages, setMessages] = useState<Bubble[]>([]);
     const [draft, setDraft] = useState('');
     const [busy, setBusy] = useState(false);
     const scrollRef = useRef<HTMLDivElement | null>(null);
 
-    const send = useCallback(async () => {
-        const text = draft.trim();
-        if (!text || busy) return;
-        setDraft('');
-        const userMsg: Bubble = { role: 'user', content: text };
-        // Optimistically append the user bubble + an empty assistant bubble
-        // that we mutate as tokens arrive.
+    // Detect the AI engine on mount so we can either show the chat
+    // UI or a clear install card. Without this the user clicks Send
+    // and gets a cryptic spawn error.
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            const list = await engineStatus();
+            const llama = list.find(e => e.id === 'llamacpp');
+            if (cancelled) return;
+            if (!llama) {
+                setSetup({ phase: 'install-failed', error: 'AI engine not registered.' });
+                return;
+            }
+            setSetup(llama.installed
+                ? { phase: 'ready' }
+                : { phase: 'not-installed', engine: llama });
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const installEngine = useCallback(async () => {
+        setSetup({ phase: 'installing', progress: null });
+        try {
+            await engineInstall('llamacpp', p => {
+                setSetup({ phase: 'installing', progress: p });
+            });
+            setSetup({ phase: 'ready' });
+        } catch (err) {
+            setSetup({ phase: 'install-failed', error: String(err) });
+        }
+    }, []);
+
+    const send = useCallback(async (text?: string) => {
+        const body = (text ?? draft).trim();
+        if (!body || busy || setup.phase !== 'ready') return;
+        if (!text) setDraft('');
+        const userMsg: Bubble = { role: 'user', content: body };
         setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '', streaming: true }]);
         setBusy(true);
-        // Build history from current messages + the new user one.
-        // (React state hasn't flushed yet so we splice manually.)
         const history: ChatMessage[] = [
             ...messages.map(m => ({ role: m.role, content: m.content })),
-            { role: 'user', content: text },
+            { role: 'user', content: body },
         ];
         await chatSend(history, ev => {
             if (ev.kind === 'token') {
@@ -56,38 +98,27 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
                     return out;
                 });
             } else if (ev.kind === 'done') {
-                // Mark the streaming bubble as done + try to extract a
-                // pipeline. extract is fast (just JSON parsing) so we
-                // do it after-the-fact to avoid re-running per token.
                 setMessages(prev => {
                     const out = prev.slice();
                     const last = out[out.length - 1];
                     if (last && last.role === 'assistant' && last.streaming) {
                         out[out.length - 1] = { ...last, streaming: false };
+                        // Try to extract a pipeline once streaming finishes.
+                        void chatExtractPipeline(last.content).then(pipe => {
+                            if (pipe) {
+                                setMessages(c => {
+                                    const o2 = c.slice();
+                                    const t = o2[o2.length - 1];
+                                    if (t && t.role === 'assistant') {
+                                        o2[o2.length - 1] = { ...t, pipeline: pipe };
+                                    }
+                                    return o2;
+                                });
+                            }
+                        });
                     }
                     return out;
                 });
-                void (async () => {
-                    // Re-read the latest assistant message off state.
-                    setMessages(curr => {
-                        const tail = curr[curr.length - 1];
-                        if (tail && tail.role === 'assistant') {
-                            void chatExtractPipeline(tail.content).then(pipe => {
-                                if (pipe) {
-                                    setMessages(c => {
-                                        const out = c.slice();
-                                        const t = out[out.length - 1];
-                                        if (t && t.role === 'assistant') {
-                                            out[out.length - 1] = { ...t, pipeline: pipe };
-                                        }
-                                        return out;
-                                    });
-                                }
-                            });
-                        }
-                        return curr;
-                    });
-                })();
                 setBusy(false);
             } else if (ev.kind === 'error') {
                 setMessages(prev => {
@@ -97,7 +128,7 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
                         out[out.length - 1] = {
                             ...last,
                             streaming: false,
-                            content: last.content + `\n\n[error: ${ev.message}]`,
+                            content: ev.message,
                         };
                     }
                     return out;
@@ -105,9 +136,18 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
                 setBusy(false);
             }
         });
-    }, [draft, busy, messages]);
+    }, [draft, busy, messages, setup.phase]);
 
-    // Auto-scroll to bottom as new tokens arrive.
+    // Esc closes the panel.
+    useEffect(() => {
+        const h = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', h);
+        return () => window.removeEventListener('keydown', h);
+    }, [onClose]);
+
+    // Auto-scroll as tokens stream in.
     useEffect(() => {
         const el = scrollRef.current;
         if (el) el.scrollTop = el.scrollHeight;
@@ -117,82 +157,212 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
         <aside className="chat-panel" role="complementary" aria-label="AI assistant">
             <header className="chat-panel-head">
                 <div className="chat-panel-title">
-                    <Sparkles size={14} aria-hidden="true" /> AI Assistant
+                    <Sparkles size={14} aria-hidden="true" />
+                    <span>Duckie AI Assistant</span>
+                    {setup.phase === 'ready' ? (
+                        <span className="chat-panel-tag">local</span>
+                    ) : null}
                 </div>
                 <button
                     type="button"
                     className="chat-panel-close"
                     onClick={onClose}
-                    title="Close"
+                    title="Close (Esc)"
                     aria-label="Close chat"
                 >
                     <X size={14} />
                 </button>
             </header>
 
-            <div ref={scrollRef} className="chat-panel-scroll">
-                {messages.length === 0 ? (
-                    <div className="chat-panel-empty">
-                        <Bot size={28} />
-                        <div className="chat-panel-empty-title">Describe a pipeline</div>
-                        <div className="chat-panel-empty-hint">
-                            Try: "Read orders.csv, filter manager = 'Sourav Roy', write to
-                            orders.parquet"
-                        </div>
-                    </div>
-                ) : (
-                    messages.map((m, i) => (
-                        <div key={i} className={`chat-bubble chat-bubble-${m.role}`}>
-                            <div className="chat-bubble-content">
-                                {m.content}
-                                {m.streaming ? (
-                                    <Loader2 size={12} className="spin chat-bubble-spin" />
-                                ) : null}
+            {setup.phase === 'checking' ? (
+                <div className="chat-panel-state">
+                    <Loader2 size={18} className="spin" />
+                    <span>Checking AI engine...</span>
+                </div>
+            ) : setup.phase === 'not-installed' ? (
+                <SetupCard
+                    title="Install the Duckie AI Assistant"
+                    body="Duckle downloads a small local model (~1.1 GB) so the assistant runs entirely on your machine - no API keys, no cloud calls."
+                    cta="Install (~1.1 GB)"
+                    onCta={installEngine}
+                />
+            ) : setup.phase === 'install-failed' ? (
+                <SetupCard
+                    title="Install failed"
+                    body={setup.error}
+                    cta="Retry"
+                    onCta={installEngine}
+                />
+            ) : setup.phase === 'installing' ? (
+                <div className="chat-panel-state chat-panel-state-install">
+                    <Loader2 size={18} className="spin" />
+                    <InstallProgressView progress={setup.progress} />
+                </div>
+            ) : (
+                <>
+                    <div ref={scrollRef} className="chat-panel-scroll">
+                        {messages.length === 0 ? (
+                            <div className="chat-panel-empty">
+                                <Workflow size={26} className="chat-panel-empty-icon" />
+                                <div className="chat-panel-empty-title">
+                                    Describe a pipeline
+                                </div>
+                                <div className="chat-panel-empty-hint">
+                                    The assistant outputs a Duckle pipeline you can click to insert
+                                    into the canvas.
+                                </div>
+                                <div className="chat-panel-prompts">
+                                    {EXAMPLE_PROMPTS.map(p => (
+                                        <button
+                                            key={p}
+                                            type="button"
+                                            className="chat-panel-prompt"
+                                            onClick={() => void send(p)}
+                                        >
+                                            {p}
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
-                            {m.pipeline ? (
-                                <button
-                                    type="button"
-                                    className="chat-bubble-insert"
-                                    onClick={() => onInsertPipeline(m.pipeline)}
-                                >
-                                    Insert into canvas
-                                </button>
-                            ) : null}
-                        </div>
-                    ))
-                )}
-            </div>
+                        ) : (
+                            messages.map((m, i) => (
+                                <div key={i} className={`chat-bubble chat-bubble-${m.role}`}>
+                                    <div className="chat-bubble-content">
+                                        {m.content}
+                                        {m.streaming ? <span className="chat-caret" /> : null}
+                                    </div>
+                                    {m.pipeline ? (
+                                        <button
+                                            type="button"
+                                            className="chat-bubble-insert"
+                                            onClick={() => onInsertPipeline(m.pipeline)}
+                                        >
+                                            <Workflow size={12} /> Insert into canvas
+                                        </button>
+                                    ) : null}
+                                </div>
+                            ))
+                        )}
+                    </div>
 
-            <form
-                className="chat-panel-form"
-                onSubmit={e => {
-                    e.preventDefault();
-                    void send();
-                }}
-            >
-                <textarea
-                    className="chat-panel-input"
-                    value={draft}
-                    onChange={e => setDraft(e.target.value)}
-                    placeholder={busy ? 'Thinking...' : 'Ask for a pipeline...'}
-                    rows={2}
-                    disabled={busy}
-                    onKeyDown={e => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
+                    <form
+                        className="chat-panel-form"
+                        onSubmit={e => {
                             e.preventDefault();
                             void send();
-                        }
-                    }}
-                />
-                <button
-                    type="submit"
-                    className="btn btn-primary chat-panel-send"
-                    disabled={busy || !draft.trim()}
-                    aria-label="Send"
-                >
-                    <Send size={13} />
-                </button>
-            </form>
+                        }}
+                    >
+                        <textarea
+                            className="chat-panel-input"
+                            value={draft}
+                            onChange={e => setDraft(e.target.value)}
+                            placeholder={busy ? 'Thinking...' : 'Describe what you need...'}
+                            rows={2}
+                            disabled={busy}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    void send();
+                                }
+                            }}
+                        />
+                        <button
+                            type="submit"
+                            className="chat-panel-send"
+                            disabled={busy || !draft.trim()}
+                            aria-label="Send"
+                            title="Send (Enter)"
+                        >
+                            {busy ? <Loader2 size={14} className="spin" /> : <Send size={14} />}
+                        </button>
+                    </form>
+                </>
+            )}
         </aside>
+    );
+}
+
+function SetupCard({
+    title,
+    body,
+    cta,
+    onCta,
+}: {
+    title: string;
+    body: string;
+    cta: string;
+    onCta: () => void;
+}) {
+    return (
+        <div className="chat-panel-setup">
+            <div className="chat-panel-setup-icon">
+                <Sparkles size={20} />
+            </div>
+            <div className="chat-panel-setup-title">{title}</div>
+            <div className="chat-panel-setup-body">{body}</div>
+            <button type="button" className="chat-panel-setup-cta" onClick={onCta}>
+                <Download size={14} /> {cta}
+            </button>
+            <div className="chat-panel-setup-foot">
+                Runs on your CPU. No data leaves your machine.
+            </div>
+        </div>
+    );
+}
+
+function InstallProgressView({ progress }: { progress: InstallProgress | null }) {
+    if (!progress) return <span>Starting download...</span>;
+    let label = '';
+    let pct: number | null = null;
+    switch (progress.phase) {
+        case 'downloading': {
+            const mb = (progress.received / 1_000_000).toFixed(0);
+            if (progress.total) {
+                pct = Math.round((progress.received / progress.total) * 100);
+                const totalMb = (progress.total / 1_000_000).toFixed(0);
+                label = `Downloading server ${mb} / ${totalMb} MB`;
+            } else {
+                label = `Downloading server ${mb} MB`;
+            }
+            break;
+        }
+        case 'extracting':
+            label = 'Extracting...';
+            break;
+        case 'verifying':
+            label = 'Verifying...';
+            break;
+        case 'downloading_model': {
+            const mb = (progress.received / 1_000_000).toFixed(0);
+            if (progress.total) {
+                pct = Math.round((progress.received / progress.total) * 100);
+                const totalMb = (progress.total / 1_000_000).toFixed(0);
+                label = `Downloading model ${mb} / ${totalMb} MB`;
+            } else {
+                label = `Downloading model ${mb} MB`;
+            }
+            break;
+        }
+        case 'installing_extension':
+            label = `Installing extensions (${progress.index}/${progress.total})`;
+            break;
+        case 'done':
+            label = 'Ready';
+            break;
+        case 'failed':
+            label = progress.error;
+            break;
+    }
+    return (
+        <div className="chat-panel-install-progress">
+            <div className="chat-panel-install-bar">
+                <div
+                    className="chat-panel-install-fill"
+                    style={{ width: pct != null ? `${pct}%` : '30%' }}
+                    data-indeterminate={pct == null}
+                />
+            </div>
+            <div className="chat-panel-install-label">{label}</div>
+        </div>
     );
 }

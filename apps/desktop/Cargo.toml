@@ -36,6 +36,10 @@ duckle-duckdb-engine = { workspace = true }
 duckle-scheduler = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 zip = "2"
+# tar + gzip for the llama.cpp archives on Linux/macOS - they ship
+# as .tar.gz where Windows ships as .zip.
+tar = "0.4"
+flate2 = "1"
 # Used by the AI chat assistant to talk to the local llama-server
 # subprocess over HTTP. Same blocking client we use in the engine
 # crate; reading the SSE stream via BufReader<impl Read>.

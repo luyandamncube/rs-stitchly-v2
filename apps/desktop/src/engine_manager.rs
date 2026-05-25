@@ -14,7 +14,10 @@ pub const DUCKDB_VERSION: &str = "1.5.3";
 pub const SLOTHDB_VERSION: &str = "0.2.7";
 /// Pinned llama.cpp build. Bump periodically; the GGUF wire format
 /// is stable so newer server binaries keep working with older models.
-pub const LLAMACPP_BUILD: &str = "b4400";
+/// Note: assets at older builds use a different naming (avx/avx2/cuda
+/// flavors) - keep this on a recent build that ships the `*-cpu-*`
+/// universal variant.
+pub const LLAMACPP_BUILD: &str = "b9305";
 /// HuggingFace model artifact for the AI chat assistant. Qwen2.5
 /// Coder 1.5B Instruct Q4_K_M - ~1.1 GB, runs on CPU on typical
 /// laptops, tuned for code / structured-JSON generation.
@@ -55,13 +58,16 @@ const SLOTHDB: EngineSpec = EngineSpec {
 
 /// llama.cpp HTTP server + a small Qwen GGUF model. Treated as an
 /// optional "engine" for UX consistency with the setup screen but
-/// powers the chat assistant rather than the SQL execution path.
+/// powers the Duckie AI Assistant chat panel rather than the SQL
+/// execution path.
 const LLAMACPP: EngineSpec = EngineSpec {
     id: "llamacpp",
-    name: "AI Assistant",
+    name: "Duckie AI Assistant",
     description: "Local chat assistant via llama.cpp + Qwen 1.5B. Downloads ~1.1 GB; runs entirely offline once installed.",
     required: false,
-    repo: "ggerganov/llama.cpp",
+    // Repo moved from ggerganov to ggml-org in mid-2025; use the new
+    // org path directly to skip the 301 redirect.
+    repo: "ggml-org/llama.cpp",
     version: LLAMACPP_BUILD,
     binary: "llama-server",
 };
@@ -133,12 +139,15 @@ fn asset_for(s: &EngineSpec) -> Option<String> {
         // llama.cpp ships pre-built binaries per OS/arch. We pick the
         // most-compatible variant (no GPU acceleration) so the model
         // runs on any CPU - the chat assistant only needs ~5 tok/s.
+        // Windows ships as zip; Linux + macOS as tar.gz.
         "llamacpp" => Some(
             match (os, arch) {
                 ("windows", "x86_64") => format!("llama-{}-bin-win-cpu-x64.zip", LLAMACPP_BUILD),
-                ("linux", "x86_64") => format!("llama-{}-bin-ubuntu-x64.zip", LLAMACPP_BUILD),
-                ("macos", "aarch64") => format!("llama-{}-bin-macos-arm64.zip", LLAMACPP_BUILD),
-                ("macos", _) => format!("llama-{}-bin-macos-x64.zip", LLAMACPP_BUILD),
+                ("windows", "aarch64") => format!("llama-{}-bin-win-cpu-arm64.zip", LLAMACPP_BUILD),
+                ("linux", "x86_64") => format!("llama-{}-bin-ubuntu-x64.tar.gz", LLAMACPP_BUILD),
+                ("linux", "aarch64") => format!("llama-{}-bin-ubuntu-arm64.tar.gz", LLAMACPP_BUILD),
+                ("macos", "aarch64") => format!("llama-{}-bin-macos-arm64.tar.gz", LLAMACPP_BUILD),
+                ("macos", _) => format!("llama-{}-bin-macos-x64.tar.gz", LLAMACPP_BUILD),
                 _ => return None,
             },
         ),
@@ -313,7 +322,8 @@ fn install_spec<F: FnMut(InstallProgress)>(
 
     let target = binary_path(app_data, s);
 
-    if asset.to_ascii_lowercase().ends_with(".zip") {
+    let lower = asset.to_ascii_lowercase();
+    if lower.ends_with(".zip") {
         on_progress(InstallProgress::Extracting);
         let want = binary_file_name(s);
         let reader = std::io::Cursor::new(buf);
@@ -360,6 +370,48 @@ fn install_spec<F: FnMut(InstallProgress)>(
         if !extracted {
             return Err(format!(
                 "{} binary not found inside the downloaded archive",
+                s.name
+            ));
+        }
+    } else if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        // llama.cpp's Linux + macOS releases ship as tar.gz. Same
+        // semantics as the llamacpp zip branch: extract every file
+        // to the engine dir so the binary keeps its sibling .so / .dylib.
+        on_progress(InstallProgress::Extracting);
+        let want = binary_file_name(s);
+        let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(buf));
+        let mut archive = tar::Archive::new(gz);
+        let mut extracted = false;
+        for entry in archive.entries().map_err(|e| e.to_string())? {
+            let mut entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
+            let leaf = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if entry.header().entry_type().is_dir() || leaf.is_empty() {
+                continue;
+            }
+            let is_target_binary =
+                leaf.eq_ignore_ascii_case(&want) || leaf.eq_ignore_ascii_case(s.binary);
+            let out_path = dir.join(&leaf);
+            let mut out = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            if is_target_binary {
+                extracted = true;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(
+                    &out_path,
+                    std::fs::Permissions::from_mode(0o755),
+                );
+            }
+        }
+        if !extracted {
+            return Err(format!(
+                "{} binary not found inside the downloaded tarball",
                 s.name
             ));
         }
