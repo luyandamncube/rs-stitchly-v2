@@ -30,13 +30,14 @@ pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
 use plan::{
     quote_ident, AiEmbedSpec, AvroSinkSpec, AvroSourceSpec, CassandraSinkSpec, CassandraSourceSpec,
     ClickHouseSinkSpec, ClickHouseSourceSpec, ClipboardSourceSpec, DatabricksSinkSpec,
-    DatabricksSourceSpec, ElasticSourceSpec, FormatFileSinkSpec, FormatFileSourceSpec, FormatKind,
-    FtpSourceSpec, GitSourceSpec, KafkaSinkSpec, KafkaSourceSpec, MilvusSourceSpec, MongoSinkSpec,
-    MongoSourceSpec, NatsSinkSpec, NatsSourceSpec, OracleSinkSpec, OracleSourceSpec,
-    PubSubSinkSpec, PubSubSourceSpec, QdrantSourceSpec, RabbitSinkSpec, RabbitSourceSpec,
-    RedisSinkSpec, RedisSourceSpec, RestPagination, RestResponseFormat, RestSourceSpec, ShellSpec,
-    SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec,
-    WasmSpec, WeaviateSourceSpec, WebhookSpec, XmlSinkSpec, XmlSourceSpec,
+    DatabricksSourceSpec, ElasticSourceSpec, EmailSourceSpec, FormatFileSinkSpec,
+    FormatFileSourceSpec, FormatKind, FtpSourceSpec, GitSourceSpec, KafkaSinkSpec, KafkaSourceSpec,
+    MilvusSourceSpec, MongoSinkSpec, MongoSourceSpec, NatsSinkSpec, NatsSourceSpec, OracleSinkSpec,
+    OracleSourceSpec, PubSubSinkSpec, PubSubSourceSpec, QdrantSourceSpec, RabbitSinkSpec,
+    RabbitSourceSpec, RedisSinkSpec, RedisSourceSpec, RestPagination, RestResponseFormat,
+    RestSourceSpec, ShellSpec, SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec,
+    SqlServerSinkSpec, SqlServerSourceSpec, WasmSpec, WeaviateSourceSpec, WebhookSpec, XmlSinkSpec,
+    XmlSourceSpec,
 };
 
 #[derive(Debug, Error)]
@@ -552,6 +553,8 @@ impl DuckdbEngine {
                     self.run_ai_embed(&db_path, spec)
                 } else if let Some(spec) = stage.wasm.as_ref() {
                     self.run_wasm(&db_path, spec)
+                } else if let Some(spec) = stage.email_source.as_ref() {
+                    self.run_email_source(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -2458,6 +2461,96 @@ impl DuckdbEngine {
         Ok(format!(
             "ai.embed ({}): embedded {} row(s) into {}",
             spec.model, count, spec.node_id
+        ))
+    }
+
+    /// src.email: connect to an IMAP server via rustls, select a
+    /// mailbox, fetch up to max_messages most recent messages by
+    /// reverse-UID order, parse with mail-parser, emit one row per
+    /// message with {uid, from, to, subject, date, body_text}.
+    ///
+    /// Basic auth only - OAuth (gmail / o365) is a follow-up that
+    /// needs the same model-API-credential pattern xf.ai.embed
+    /// established, plus a token-refresh worker.
+    fn run_email_source(
+        &self,
+        db: &Path,
+        spec: &EmailSourceSpec,
+    ) -> Result<String, EngineError> {
+        use imap::ClientBuilder;
+        use mail_parser::MessageParser;
+        self.check_cancelled()?;
+        let client = ClientBuilder::new(&spec.host, spec.port)
+            .connect()
+            .map_err(|e| EngineError::Query(format!("imap connect: {}", e)))?;
+        let mut session = client
+            .login(&spec.user, &spec.password)
+            .map_err(|(e, _)| EngineError::Query(format!("imap login: {}", e)))?;
+        let mailbox = session
+            .select(&spec.mailbox)
+            .map_err(|e| EngineError::Query(format!("imap select {}: {}", spec.mailbox, e)))?;
+        let total = mailbox.exists as u64;
+        if total == 0 {
+            let _ = session.logout();
+            materialize_jsonobjects_as_table(db, &spec.node_id, &[])?;
+            return Ok(format!(
+                "email: 0 messages in {} -> {}",
+                spec.mailbox, spec.node_id
+            ));
+        }
+        // Fetch the last N messages (by sequence). seqset is 1-based.
+        let from = total.saturating_sub(spec.max_messages.saturating_sub(1)).max(1);
+        let seqset = format!("{}:{}", from, total);
+        let messages = session
+            .fetch(&seqset, "(UID BODY[])")
+            .map_err(|e| EngineError::Query(format!("imap fetch: {}", e)))?;
+        let parser = MessageParser::default();
+        let mut rows: Vec<JsonValue> = Vec::new();
+        for fetch in messages.iter() {
+            self.check_cancelled()?;
+            let uid = fetch.uid.map(|u| u as i64).unwrap_or(0);
+            let body = fetch.body().unwrap_or_default();
+            let parsed = parser
+                .parse(body)
+                .ok_or_else(|| EngineError::Query("email parse failed".into()))?;
+            let from = parsed
+                .from()
+                .map(|addrs| {
+                    addrs
+                        .iter()
+                        .filter_map(|a| a.address())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let to = parsed
+                .to()
+                .map(|addrs| {
+                    addrs
+                        .iter()
+                        .filter_map(|a| a.address())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let subject = parsed.subject().unwrap_or("").to_string();
+            let date = parsed.date().map(|d| d.to_rfc3339()).unwrap_or_default();
+            let body_text = parsed.body_text(0).map(|s| s.into_owned()).unwrap_or_default();
+            let mut row = serde_json::Map::new();
+            row.insert("uid".into(), JsonValue::from(uid));
+            row.insert("from".into(), JsonValue::String(from));
+            row.insert("to".into(), JsonValue::String(to));
+            row.insert("subject".into(), JsonValue::String(subject));
+            row.insert("date".into(), JsonValue::String(date));
+            row.insert("body_text".into(), JsonValue::String(body_text));
+            rows.push(JsonValue::Object(row));
+        }
+        let _ = session.logout();
+        let count = rows.len();
+        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        Ok(format!(
+            "email: materialized {} message(s) from {}@{}:{}/{} into {}",
+            count, spec.user, spec.host, spec.port, spec.mailbox, spec.node_id
         ))
     }
 

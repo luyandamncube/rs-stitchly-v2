@@ -167,6 +167,8 @@ pub struct Stage {
     pub ftp_source: Option<FtpSourceSpec>,
     /// System clipboard reader.
     pub clipboard_source: Option<ClipboardSourceSpec>,
+    /// IMAP mailbox reader.
+    pub email_source: Option<EmailSourceSpec>,
     /// xf.ai.embed (per-row embedding).
     pub ai_embed: Option<AiEmbedSpec>,
     /// code.wasm (per-row WebAssembly transform).
@@ -605,6 +607,21 @@ pub struct FtpSourceSpec {
 #[derive(Debug, Clone)]
 pub struct ClipboardSourceSpec {
     pub node_id: String,
+}
+
+/// src.email: connect to an IMAP server, select a mailbox, fetch up
+/// to max_messages most recent. Emits {uid, from, to, subject, date,
+/// body_text}. TLS via rustls (default port 993). Basic auth -
+/// OAuth is on the roadmap for gmail / o365.
+#[derive(Debug, Clone)]
+pub struct EmailSourceSpec {
+    pub node_id: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: String,
+    pub mailbox: String,
+    pub max_messages: u64,
 }
 
 /// xf.ai.embed: per-row embedding transform. Reads `input_column`
@@ -1271,6 +1288,7 @@ fn build_stage(
     let mut shell: Option<ShellSpec> = None;
     let mut ftp_source: Option<FtpSourceSpec> = None;
     let mut clipboard_source: Option<ClipboardSourceSpec> = None;
+    let mut email_source: Option<EmailSourceSpec> = None;
     let mut ai_embed: Option<AiEmbedSpec> = None;
     let mut wasm: Option<WasmSpec> = None;
     let mut wait_ms: Option<u64> = None;
@@ -2356,6 +2374,39 @@ fn build_stage(
                 .filter(|n| *n > 0),
         });
         (String::new(), StageKind::View, None)
+    } else if component_id == "src.email" {
+        // IMAP source. host required (e.g. imap.fastmail.com); port
+        // defaults to 993 (IMAPS). mailbox defaults to INBOX.
+        let host = string_prop(&props, "host")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: host required", component_id)))?;
+        let user = string_prop(&props, "user")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: user required", component_id)))?;
+        let password = string_prop(&props, "password")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: password required", component_id)))?;
+        email_source = Some(EmailSourceSpec {
+            node_id: node.id.clone(),
+            host,
+            port: props
+                .get("port")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0 && *n < 65536)
+                .map(|n| n as u16)
+                .unwrap_or(993),
+            user,
+            password,
+            mailbox: string_prop(&props, "mailbox")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "INBOX".into()),
+            max_messages: props
+                .get("maxMessages")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0)
+                .unwrap_or(50),
+        });
+        (String::new(), StageKind::View, None)
     } else if component_id == "src.clipboard" {
         // System clipboard reader. No props - just emit current
         // clipboard content as a row (or rows, if JSON array).
@@ -3119,6 +3170,7 @@ fn build_stage(
         clipboard_source,
         ai_embed,
         wasm,
+        email_source,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,

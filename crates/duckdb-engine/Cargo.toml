@@ -98,6 +98,13 @@ arboard = { version = "3", default-features = false }
 # execution, but per-row ETL transforms aren't throughput-critical.
 # The wasm module runs in a sandbox - no fs, no network, no env vars.
 wasmi = "0.40"
+# IMAP client for src.email. 3.x alpha is what we need for rustls
+# support - the 2.x stable line only supports native-tls (OpenSSL on
+# Linux which would break the self-contained build promise). The
+# accompanying mail-parser decodes RFC 822 envelopes + MIME bodies.
+imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
+mail-parser = "0.11"
+rustls-connector = { version = "0.21", default-features = false, features = ["rustls--ring"] }
 
 [features]
 default = ["oracle"]

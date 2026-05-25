@@ -6863,6 +6863,52 @@ fn src_clipboard_reads_json_array_and_plain_text() {
     assert_eq!(len, "12");
 }
 
+/// src.email: env-gated integration test. Set DUCKLE_IMAP_HOST,
+/// USER, PASSWORD (and optionally PORT, MAILBOX) to a working IMAP
+/// account. Skips cleanly otherwise.
+#[test]
+fn src_email_fetches_messages_via_real_imap() {
+    let engine = engine_or_skip!();
+    let host = match std::env::var("DUCKLE_IMAP_HOST").ok() {
+        Some(h) if !h.is_empty() => h,
+        _ => {
+            eprintln!("skipping: set DUCKLE_IMAP_HOST to run IMAP tests");
+            return;
+        }
+    };
+    let user = std::env::var("DUCKLE_IMAP_USER").unwrap_or_default();
+    let password = std::env::var("DUCKLE_IMAP_PASSWORD").unwrap_or_default();
+    if user.is_empty() || password.is_empty() {
+        eprintln!("skipping: need DUCKLE_IMAP_USER + DUCKLE_IMAP_PASSWORD");
+        return;
+    }
+    let port = std::env::var("DUCKLE_IMAP_PORT")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(993);
+    let mailbox = std::env::var("DUCKLE_IMAP_MAILBOX").unwrap_or_else(|_| "INBOX".into());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "mail.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("m", "src.email", json!({
+                "host": host,
+                "port": port,
+                "user": user,
+                "password": password,
+                "mailbox": mailbox,
+                "maxMessages": 5,
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "m", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "src.email failed: {:?}", r.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert!(n >= 1 && n <= 5, "expected 1..=5 messages, got {}", n);
+}
+
 /// src.ftp: env-gated integration test. Set DUCKLE_FTP_HOST (and
 /// optionally PORT/USER/PASSWORD/DIRECTORY) to a working FTP server
 /// holding the expected layout. Skips cleanly otherwise.
