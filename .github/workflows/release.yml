@@ -73,7 +73,7 @@ jobs:
             libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev
 
       - name: Build raw Duckle binary
-        run: cargo build --release --manifest-path apps/desktop/Cargo.toml
+        run: cargo build --release --manifest-path apps/desktop/Cargo.toml --features custom-protocol
 
       - name: Stage release asset
         shell: bash

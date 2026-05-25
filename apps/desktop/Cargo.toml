@@ -39,3 +39,11 @@ zip = "2"
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[features]
+# Required for release builds. Without this feature, tauri-codegen
+# generates an asset resolver that points at devUrl
+# (http://localhost:5173), so the WebView shows ERR_CONNECTION_REFUSED.
+# `tauri build` sets this automatically; raw `cargo build --release`
+# does not, so the release workflow must pass `--features custom-protocol`.
+custom-protocol = ["tauri/custom-protocol"]

@@ -84,6 +84,51 @@ jobs:
         continue-on-error: true
         run: cargo clippy --workspace --all-targets
 
+  # Smoke build of the desktop release binary - the exact same command
+  # the release workflow runs. Catches feature-flag regressions like
+  # the v0.0.7 bug where `cargo build --release` (without
+  # `--features custom-protocol`) silently shipped a binary that loaded
+  # `http://localhost:5173` inside the Tauri WebView instead of the
+  # embedded frontend. `cargo test --workspace` never exercises this
+  # path, so the bug only surfaces when someone downloads + launches
+  # the published artifact.
+  desktop-release-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend deps
+        run: npm --prefix frontend ci
+      - name: Build frontend (embedded into the Rust binary)
+        run: npm --prefix frontend run build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux WebView deps (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev
+      - name: Build raw Duckle binary (release workflow command)
+        run: cargo build --release --manifest-path apps/desktop/Cargo.toml --features custom-protocol
+      - name: Verify embedded frontend (not devUrl) is in binary
+        # Grep the built binary for the frontend's main JS chunk filename.
+        # If tauri-codegen embedded devUrl instead, this string will be
+        # absent and the check fails - catching the v0.0.7-class bug.
+        run: |
+          set -e
+          asset=$(ls frontend/dist/assets/index-*.js | head -1 | xargs basename)
+          if grep -q "$asset" target/release/duckle; then
+            echo "OK: embedded frontend asset '$asset' is present in the binary"
+          else
+            echo "FAIL: frontend asset '$asset' NOT found in binary - tauri-codegen likely embedded devUrl"
+            exit 1
+          fi
+
   # Live PostgreSQL integration tests. Runs against a real postgres
   # service container; engine tests that don't see DUCKLE_PG_HOST in the
   # main matrix job skip cleanly, so this is the only place they execute.
