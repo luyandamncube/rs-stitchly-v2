@@ -1,0 +1,6 @@
+# Microsoft fonts copied in for ffmpeg drawtext (licensed; do not commit)
+font-reg.ttf
+font-bold.ttf
+
+# Per-scene intermediates (regenerable by build.sh)
+scenes/
