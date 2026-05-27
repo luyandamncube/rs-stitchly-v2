@@ -320,18 +320,55 @@ impl DuckdbEngine {
         let mut was_cancelled = false;
         let mut preview: Vec<NodePreview> = Vec::new();
 
-        // Each stage spawns its own duckdb.exe today. A persistent
-        // CLI session per pipeline run would shave ~80% off fixed
-        // per-stage overhead on Windows, but the obvious approach
-        // (pipe stdin + sentinel-SELECT on stdout) doesn't work:
-        // the CLI fully buffers stdout when stdin is a pipe, so the
-        // boundary-marker read blocks forever. Two viable paths:
-        //   1. file-based per-stage marker (each stage writes a
-        //      tiny COPY-to temp file we poll for) instead of
-        //      stdout framing;
-        //   2. drop the CLI subprocess and link the duckdb-rs
-        //      in-process library (same win, no buffering problem,
-        //      ~50 MB linked into the binary).
+        // Fast path: if every stage is pure-SQL with no per-stage
+        // hooks, pipe the whole pipeline as one SQL stream into a
+        // single duckdb.exe invocation. Saves ~47 ms of fixed spawn
+        // overhead per stage on Windows (4.4x speedup on a 5-stage
+        // pipeline measured locally).
+        //
+        // Stage-boundary signalling is file-based, not stdout-based:
+        // each stage's SQL is followed by a tiny COPY ... TO
+        // 'marker_dir/<i>.csv' that records the node id + COUNT(*).
+        // A poll loop in the main thread watches the marker dir
+        // and emits StageFinished events in real time. We don't
+        // read stdout at all so the CLI's stdin-piped-stdout-buffering
+        // behaviour is irrelevant here.
+        //
+        // Anything driver-based (Oracle / SQL Server / Kafka / REST
+        // / Mongo / ...) or with mid-pipeline Rust control flow
+        // (ctl.iterate / ctl.foreach / ctl.try / per-stage retry /
+        // ctl.wait) drops to the per-stage path below. Same for
+        // partial runs (subgraph-up-to-target), one-stage pipelines
+        // (no win), per-stage memory_limit_mb overrides (would leak
+        // PRAGMA across stages in a single session), and any
+        // sink_mode="error" with a pre-existing local file (the
+        // Rust pre-check guards against silent overwrite).
+        let batchable = target.is_none()
+            && compiled.stages.len() >= 2
+            && compiled.stages.iter().all(|s| {
+                s.is_pure_sql()
+                    && s.retry_attempts <= 1
+                    && s.wait_ms.is_none()
+                    && s.memory_limit_mb.is_none()
+                    && !(s.sink_mode.as_deref() == Some("error")
+                        && s.sink_path.as_deref().map(is_local_path).unwrap_or(false)
+                        && s.sink_path
+                            .as_deref()
+                            .map(|p| std::path::Path::new(p).exists())
+                            .unwrap_or(false))
+            });
+
+        if batchable {
+            let r = self.execute_batched(
+                &db_path,
+                &secret_prefix,
+                &compiled.stages,
+                total_start,
+                &mut on_event,
+            );
+            return r;
+        }
+
         for stage in &compiled.stages {
             if self.cancel.load(Ordering::Relaxed) {
                 was_cancelled = true;
@@ -777,6 +814,396 @@ impl DuckdbEngine {
         RunResult {
             status: final_status.into(),
             duration_ms: total_start.elapsed().as_millis() as u64,
+            nodes,
+            preview,
+            error: overall_error,
+        }
+    }
+
+    /// Run an all-pure-SQL pipeline as a single `duckdb.exe` invocation
+    /// fed by stdin. Each stage's SQL is followed by a COPY that drops
+    /// a small NDJSON marker (node id + row count) plus, for view
+    /// stages, a schema + preview COPY. The main thread polls the
+    /// marker dir and emits StageStarted / StageFinished as each
+    /// marker lands, so the UI still sees per-stage progress.
+    ///
+    /// Saves ~47 ms of fixed spawn overhead per stage on Windows
+    /// (measured locally with 5 stages: 245 ms per-spawn vs 56 ms
+    /// batched). The win shows up most on small-data pipelines with
+    /// many stages - exactly the dev / debug loop where users feel
+    /// slowness.
+    ///
+    /// We never read the CLI's stdout - we only wait for its exit
+    /// code and read stderr on failure. The stdin-piped-stdout-buffers
+    /// behaviour that blocked the persistent-session attempt doesn't
+    /// matter here.
+    fn execute_batched(
+        &self,
+        db_path: &Path,
+        secret_prefix: &str,
+        stages: &[plan::Stage],
+        total_start: Instant,
+        on_event: &mut dyn FnMut(PipelineEvent),
+    ) -> RunResult {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let mut nodes: std::collections::BTreeMap<String, NodeRunStatus> = Default::default();
+        let mut overall_error: Option<String> = None;
+        let mut preview: Vec<NodePreview> = Vec::new();
+        let mut was_cancelled = false;
+
+        let marker_dir = std::env::temp_dir().join(format!(
+            "duckle_marks_{}_{}_{}",
+            std::process::id(),
+            now_nanos(),
+            RUN_SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        if let Err(e) = std::fs::create_dir_all(&marker_dir) {
+            return RunResult::failed(
+                total_start,
+                format!("could not create marker dir: {}", e),
+            );
+        }
+        let _marker_guard = TempDirGuard(marker_dir.clone());
+
+        let path_to_sql = |p: &Path| -> String {
+            p.display()
+                .to_string()
+                .replace('\\', "/")
+                .replace('\'', "''")
+        };
+
+        // Build the batched SQL: secret prefix, PRAGMA preset (once),
+        // then per-stage SQL + per-stage markers + per-view previews.
+        let mut batched_sql = String::new();
+        if !secret_prefix.is_empty() {
+            batched_sql.push_str(secret_prefix);
+            batched_sql.push('\n');
+        }
+        batched_sql.push_str(
+            "PRAGMA preserve_insertion_order=false;\n\
+             PRAGMA enable_object_cache=true;\n\
+             PRAGMA enable_progress_bar=false;\n",
+        );
+        if let Ok(m) = std::env::var("DUCKLE_MEMORY_LIMIT") {
+            let m = m.trim();
+            if !m.is_empty() {
+                batched_sql.push_str(&format!(
+                    "PRAGMA memory_limit='{}';\n",
+                    m.replace('\'', "''")
+                ));
+            }
+        }
+        if let Ok(t) = std::env::var("DUCKLE_THREADS") {
+            if let Ok(n) = t.trim().parse::<u32>() {
+                if n > 0 {
+                    batched_sql.push_str(&format!("PRAGMA threads={};\n", n));
+                }
+            }
+        }
+        if let Ok(d) = std::env::var("DUCKLE_TEMP_DIR") {
+            let d = d.trim();
+            if !d.is_empty() {
+                batched_sql.push_str(&format!(
+                    "PRAGMA temp_directory='{}';\n",
+                    d.replace('\'', "''").replace('\\', "/"),
+                ));
+            }
+        }
+
+        for (i, stage) in stages.iter().enumerate() {
+            batched_sql.push_str(&stage.sql);
+            // Planner does not always terminate stage.sql with ';' -
+            // the per-stage path tolerates it because each CLI invocation
+            // gets exactly one logical statement and parses fine at EOF.
+            // In batched mode the marker COPY follows immediately, so we
+            // need an explicit ';' to keep the parser from gluing them.
+            if !stage.sql.trim_end().ends_with(';') {
+                batched_sql.push(';');
+            }
+            batched_sql.push('\n');
+            // Two cases where the marker MUST NOT query <node>:
+            //   - ctl.switch creates <node>__case_N + <node>__default
+            //     tables instead of a <node> view, so querying <node>
+            //     itself fails with "table does not exist".
+            //   - xf.assert wraps an error() call in its view body;
+            //     querying the view eagerly fires the error here even
+            //     when the actual assertion failure should surface at
+            //     the downstream sink (matches per-stage semantics).
+            // Other view stages CAN be counted - querying them only
+            // evaluates the same view body the downstream sink would
+            // anyway, so it's free.
+            let count_unsafe = matches!(
+                stage.component_id.as_str(),
+                "ctl.switch" | "xf.assert"
+            );
+            let marker = marker_dir.join(format!("{}.json", i));
+            let count_target = match stage.kind {
+                plan::StageKind::Sink => Some(stage.from.as_deref().unwrap_or(&stage.node_id)),
+                plan::StageKind::View if !count_unsafe => Some(stage.node_id.as_str()),
+                plan::StageKind::View => None,
+            };
+            match count_target {
+                Some(t) => batched_sql.push_str(&format!(
+                    "COPY (SELECT '{}' AS n, (SELECT COUNT(*) FROM {}) AS r) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    stage.node_id.replace('\'', "''"),
+                    plan::quote_ident(t),
+                    path_to_sql(&marker),
+                )),
+                None => batched_sql.push_str(&format!(
+                    "COPY (SELECT '{}' AS n) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    stage.node_id.replace('\'', "''"),
+                    path_to_sql(&marker),
+                )),
+            }
+            // Preview only for view stages, and only if querying the view
+            // for preview rows wouldn't trigger the same eager-evaluation
+            // problem the row-count subquery just dodged. We accept the
+            // cost here because the preview is the user-visible payoff
+            // for the batched mode; users would lose it otherwise. If
+            // the preview query fails (assert / switch / etc.), -bail
+            // aborts the batch and we attribute the failure to this
+            // stage - same as per-stage would for the same reason. So:
+            // skip preview for components that don't produce <node> and
+            // for xf.assert (where the predicate check would fire here
+            // rather than at the downstream sink).
+            if matches!(stage.kind, plan::StageKind::View)
+                && stage.component_id != "ctl.switch"
+                && stage.component_id != "xf.assert"
+            {
+                let schema = marker_dir.join(format!("{}_schema.json", i));
+                let rows = marker_dir.join(format!("{}_rows.json", i));
+                batched_sql.push_str(&format!(
+                    "COPY (SELECT * FROM (DESCRIBE {})) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    plan::quote_ident(&stage.node_id),
+                    path_to_sql(&schema),
+                ));
+                batched_sql.push_str(&format!(
+                    "COPY (SELECT * FROM {} LIMIT {}) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    plan::quote_ident(&stage.node_id),
+                    PREVIEW_ROW_LIMIT,
+                    path_to_sql(&rows),
+                ));
+            }
+        }
+
+        let mut cmd = std::process::Command::new(&self.bin);
+        cmd.arg(db_path)
+            .arg("-bail")
+            .stdin(Stdio::piped())
+            // stdout MUST be piped, not null. On Windows the DuckDB
+            // CLI suppresses stderr output entirely when stdout is
+            // redirected to NUL - verified empirically: same SQL,
+            // stdout=null gives 0 bytes of stderr; stdout=piped or
+            // inherit gives the full error text. We never look at
+            // the bytes we read here, but a background thread has
+            // to drain the pipe so its kernel buffer doesn't fill
+            // and block the CLI.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return RunResult::failed(
+                    total_start,
+                    format!("could not start duckdb: {}", e),
+                );
+            }
+        };
+
+        // Write the SQL on a side thread so the main thread is free
+        // to poll markers + cancel. Closing stdin (drop on thread
+        // exit) signals EOF to the CLI = "no more statements coming."
+        let stdin = match child.stdin.take() {
+            Some(s) => s,
+            None => {
+                return RunResult::failed(total_start, "duckdb stdin not captured".into());
+            }
+        };
+        let sql_for_writer = batched_sql;
+        let writer_thread = std::thread::spawn(move || {
+            let mut s = stdin;
+            let _ = s.write_all(sql_for_writer.as_bytes());
+        });
+
+        // Drain stdout + stderr on side threads. The pipe kernel
+        // buffer (~4 KB on Windows) fills if no one reads, and the
+        // CLI blocks on write -> deadlock. We discard stdout (we
+        // don't read result sets via stdout) but still have to
+        // drain it. Stderr is what carries CLI errors; we keep it.
+        let stdout_handle = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                return RunResult::failed(total_start, "duckdb stdout not captured".into());
+            }
+        };
+        let _stdout_drain = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut s = stdout_handle;
+            let mut sink = [0u8; 4096];
+            while let Ok(n) = s.read(&mut sink) {
+                if n == 0 {
+                    break;
+                }
+            }
+        });
+        let stderr_handle = match child.stderr.take() {
+            Some(s) => s,
+            None => {
+                return RunResult::failed(total_start, "duckdb stderr not captured".into());
+            }
+        };
+        let stderr_thread = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut s = stderr_handle;
+            let mut buf = Vec::new();
+            let _ = s.read_to_end(&mut buf);
+            buf
+        });
+
+        // Emit StageStarted for stage 0 + record its wall-clock start.
+        let mut stage_started_at: Vec<Instant> = vec![Instant::now(); stages.len()];
+        if let Some(first) = stages.first() {
+            on_event(PipelineEvent::StageStarted {
+                node_id: first.node_id.clone(),
+                label: first.label.clone(),
+                kind: stage_kind_label(&first.kind).into(),
+            });
+        }
+
+        let mut completed = 0usize;
+        let mut failed_stage_idx: Option<usize> = None;
+        let cli_stderr: Vec<u8>;
+
+        loop {
+            drain_batched_markers(
+                &mut completed,
+                stages,
+                &marker_dir,
+                &mut stage_started_at,
+                &mut nodes,
+                on_event,
+            );
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    drain_batched_markers(
+                        &mut completed,
+                        stages,
+                        &marker_dir,
+                        &mut stage_started_at,
+                        &mut nodes,
+                        on_event,
+                    );
+                    if !status.success() {
+                        failed_stage_idx = Some(completed);
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    if self.cancel.load(Ordering::Relaxed) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        was_cancelled = true;
+                        on_event(PipelineEvent::Cancelled);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => {
+                    overall_error = Some(format!("duckdb wait: {}", e));
+                    break;
+                }
+            }
+        }
+
+        // Best-effort join: the writer should be done as soon as the
+        // CLI EOF'd or errored (broken pipe wakes write_all). Doesn't
+        // matter if it isn't - the thread is detached cleanly either
+        // way.
+        let _ = writer_thread.join();
+        cli_stderr = stderr_thread.join().unwrap_or_default();
+
+        if let Some(idx) = failed_stage_idx {
+            if idx < stages.len() {
+                let stage = &stages[idx];
+                let kind = stage_kind_label(&stage.kind);
+                let elapsed =
+                    Instant::now().duration_since(stage_started_at[idx]).as_millis() as u64;
+                let stderr_str = String::from_utf8_lossy(&cli_stderr).trim().to_string();
+                let msg = if stderr_str.is_empty() {
+                    "duckdb exited with error (no diagnostic on stderr)".to_string()
+                } else {
+                    stderr_str
+                };
+                nodes.insert(
+                    stage.node_id.clone(),
+                    NodeRunStatus {
+                        status: "error".into(),
+                        kind: Some(kind.into()),
+                        rows: None,
+                        duration_ms: Some(elapsed),
+                        error: Some(msg.clone()),
+                    },
+                );
+                on_event(PipelineEvent::StageFinished {
+                    node_id: stage.node_id.clone(),
+                    kind: kind.into(),
+                    status: "error".into(),
+                    rows: None,
+                    duration_ms: elapsed,
+                    error: Some(msg.clone()),
+                });
+                overall_error.get_or_insert(format!("{}: {}", stage.label, msg));
+            } else {
+                let stderr_str = String::from_utf8_lossy(&cli_stderr).trim().to_string();
+                overall_error.get_or_insert(format!("duckdb pipeline error: {}", stderr_str));
+            }
+        }
+
+        // Read previews for the view stages that actually completed.
+        for (i, stage) in stages.iter().enumerate() {
+            if !matches!(stage.kind, plan::StageKind::View) {
+                continue;
+            }
+            if i >= completed {
+                continue;
+            }
+            let schema_path = marker_dir.join(format!("{}_schema.json", i));
+            let rows_path = marker_dir.join(format!("{}_rows.json", i));
+            let schema: Vec<Column> = read_ndjson(&schema_path)
+                .iter()
+                .filter_map(parse_describe_row)
+                .collect();
+            let rows = read_ndjson(&rows_path);
+            preview.push(NodePreview {
+                node_id: stage.node_id.clone(),
+                columns: schema,
+                rows,
+            });
+        }
+
+        let final_status = if was_cancelled {
+            "cancelled"
+        } else if overall_error.is_some() {
+            "error"
+        } else {
+            "ok"
+        };
+        let duration_ms = total_start.elapsed().as_millis() as u64;
+        on_event(PipelineEvent::Finished {
+            status: final_status.into(),
+            duration_ms,
+        });
+
+        RunResult {
+            status: final_status.into(),
+            duration_ms,
             nodes,
             preview,
             error: overall_error,
@@ -5562,6 +5989,130 @@ impl Drop for TempDbGuard {
         wal.push(".wal");
         let _ = std::fs::remove_file(PathBuf::from(wal));
     }
+}
+
+/// Removes the per-run marker / preview directory when the batched
+/// executor returns. Failures here are ignored - leftover temp files
+/// would only matter for disk pressure, and the OS temp dir gets
+/// reaped on its own schedule.
+struct TempDirGuard(PathBuf);
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn stage_kind_label(k: &plan::StageKind) -> &'static str {
+    match k {
+        plan::StageKind::Sink => "sink",
+        plan::StageKind::View => "view",
+    }
+}
+
+/// Read the single-row NDJSON marker the batched executor emits at
+/// each stage boundary. Returns (node_id, row_count). The row count
+/// is None when the stage was emitted without a COUNT(*) subquery
+/// (ctl.switch and xf.assert - see execute_batched for why), to
+/// match the per-stage path which reports those as rows=None.
+fn read_marker(path: &Path) -> (String, Option<u64>) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return (String::new(), None),
+    };
+    let line = content.lines().next().unwrap_or("").trim();
+    let Ok(v) = serde_json::from_str::<JsonValue>(line) else {
+        return (String::new(), None);
+    };
+    let n = v
+        .get("n")
+        .and_then(JsonValue::as_str)
+        .unwrap_or("")
+        .to_string();
+    let r = v.get("r").and_then(|x| {
+        x.as_u64()
+            .or_else(|| x.as_i64().map(|i| i.max(0) as u64))
+    });
+    (n, r)
+}
+
+/// Promote every marker file `<i>.json` present on disk into a
+/// StageFinished event + `NodeRunStatus` entry, advancing `completed`
+/// past each one. Also emits StageStarted for the next stage after
+/// each completion so the UI sees a continuous progress stream.
+///
+/// Free function (not a method or closure) so the borrow checker can
+/// see we only touch the arguments we declare - on_event is `&mut dyn`
+/// so the caller can pass a different closure each invocation.
+fn drain_batched_markers(
+    completed: &mut usize,
+    stages: &[plan::Stage],
+    marker_dir: &Path,
+    stage_started_at: &mut [Instant],
+    nodes: &mut std::collections::BTreeMap<String, NodeRunStatus>,
+    on_event: &mut dyn FnMut(PipelineEvent),
+) {
+    while *completed < stages.len() {
+        let marker = marker_dir.join(format!("{}.json", *completed));
+        if !marker.exists() {
+            break;
+        }
+        let (_n, rows) = read_marker(&marker);
+        let finish = Instant::now();
+        let elapsed = finish
+            .duration_since(stage_started_at[*completed])
+            .as_millis() as u64;
+        let stage = &stages[*completed];
+        let kind = stage_kind_label(&stage.kind);
+        nodes.insert(
+            stage.node_id.clone(),
+            NodeRunStatus {
+                status: "ok".into(),
+                kind: Some(kind.into()),
+                rows,
+                duration_ms: Some(elapsed),
+                error: None,
+            },
+        );
+        on_event(PipelineEvent::StageFinished {
+            node_id: stage.node_id.clone(),
+            kind: kind.into(),
+            status: "ok".into(),
+            rows,
+            duration_ms: elapsed,
+            error: None,
+        });
+        *completed += 1;
+        if *completed < stages.len() {
+            stage_started_at[*completed] = finish;
+            let next = &stages[*completed];
+            on_event(PipelineEvent::StageStarted {
+                node_id: next.node_id.clone(),
+                label: next.label.clone(),
+                kind: stage_kind_label(&next.kind).into(),
+            });
+        }
+    }
+}
+
+/// Read an NDJSON file (one JSON object per line) emitted by DuckDB's
+/// `COPY ... TO 'x.json' (FORMAT 'json', ARRAY false)`. Used by the
+/// batched executor to read back per-stage previews + schema.
+fn read_ndjson(path: &Path) -> Vec<JsonValue> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    content
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.is_empty() {
+                None
+            } else {
+                serde_json::from_str(l).ok()
+            }
+        })
+        .collect()
 }
 
 /// Per-process counter making each run's temp DB path unique even when

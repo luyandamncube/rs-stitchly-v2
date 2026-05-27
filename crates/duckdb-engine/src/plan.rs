@@ -206,6 +206,78 @@ pub struct Stage {
     pub memory_limit_mb: Option<u32>,
 }
 
+impl Stage {
+    /// True when the stage's `sql` field is the full unit of work - the
+    /// executor would run it via the bare `duckdb.exe -c` branch with no
+    /// pre/post Rust-side helper. Used by the batched executor to decide
+    /// whether a pipeline can be collapsed into a single CLI spawn.
+    ///
+    /// Keep this in sync with the spec/hook fields above: any new
+    /// driver-based source or sink should add itself here so it forces
+    /// the per-stage path.
+    pub fn is_pure_sql(&self) -> bool {
+        self.upsert.is_none()
+            && self.text_search.is_none()
+            && self.run_pipeline_path.is_none()
+            && self.install_fallback_path.is_none()
+            && self.iterate_pipeline_path.is_none()
+            && self.foreach_pipeline_path.is_none()
+            && self.webhook.is_none()
+            && self.snowflake_sink.is_none()
+            && self.databricks_sink.is_none()
+            && self.snowflake_source.is_none()
+            && self.databricks_source.is_none()
+            && self.rest_source.is_none()
+            && self.elastic_source.is_none()
+            && self.mongo_sink.is_none()
+            && self.mongo_source.is_none()
+            && self.clickhouse_sink.is_none()
+            && self.clickhouse_source.is_none()
+            && self.sqlserver_sink.is_none()
+            && self.sqlserver_source.is_none()
+            && self.cassandra_sink.is_none()
+            && self.cassandra_source.is_none()
+            && self.oracle_sink.is_none()
+            && self.oracle_source.is_none()
+            && self.redis_sink.is_none()
+            && self.redis_source.is_none()
+            && self.qdrant_source.is_none()
+            && self.weaviate_source.is_none()
+            && self.milvus_source.is_none()
+            && self.format_source.is_none()
+            && self.format_sink.is_none()
+            && self.kafka_sink.is_none()
+            && self.kafka_source.is_none()
+            && self.avro_source.is_none()
+            && self.nats_sink.is_none()
+            && self.nats_source.is_none()
+            && self.pubsub_sink.is_none()
+            && self.pubsub_source.is_none()
+            && self.xml_source.is_none()
+            && self.xml_sink.is_none()
+            && self.avro_sink.is_none()
+            && self.rabbit_sink.is_none()
+            && self.rabbit_source.is_none()
+            && self.git_source.is_none()
+            && self.shell.is_none()
+            && self.ftp_source.is_none()
+            && self.clipboard_source.is_none()
+            && self.email_source.is_none()
+            && self.email_sink.is_none()
+            && self.webhook_source.is_none()
+            && self.dynamodb_source.is_none()
+            && self.kinesis_source.is_none()
+            && self.ai_embed.is_none()
+            && self.wasm.is_none()
+            && self.javascript.is_none()
+            && self.ai_chunk.is_none()
+            && self.ai_pii.is_none()
+            && self.ai_llm.is_none()
+            && self.ai_classify.is_none()
+            && self.ai_dedupe.is_none()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TextSearchSpec {
     pub from_view: String,
@@ -3850,7 +3922,15 @@ fn build_stage(
         let has_reject = build_reject_sql(component_id, &props, inputs).map_err(|e| {
             EngineError::Config(format!("{} ({} / {}): {}", node.data.label, component_id, node.id, e))
         })?.is_some();
-        let use_view = !has_reject && main_consumers <= 1;
+        // Dynamic PIVOT (pivot values extracted from the data) is not
+        // allowed inside a view in DuckDB 1.5 - the parser rejects it
+        // with "PIVOT statements with pivot elements extracted from
+        // the data cannot be used in views." Force TABLE materialization
+        // for components whose body uses dynamic PIVOT so they don't
+        // hit that limit when the consumer-count path picks VIEW.
+        let uses_dynamic_pivot =
+            matches!(component_id, "xf.transpose" | "xf.pivot");
+        let use_view = !has_reject && main_consumers <= 1 && !uses_dynamic_pivot;
         let kind_keyword = if use_view { "VIEW" } else { "TABLE" };
         let mut sql = format!(
             "{}CREATE OR REPLACE {} {} AS {}",
@@ -8224,6 +8304,75 @@ mod tests {
 
     fn pipeline_from_json(s: &str) -> PipelineDoc {
         serde_json::from_str(s).expect("valid pipeline JSON")
+    }
+
+    #[test]
+    fn pure_sql_pipeline_marks_every_stage_batchable() {
+        // CSV -> filter -> Parquet has no driver-based stages and no
+        // ctl.* hooks, so every stage must report is_pure_sql() = true.
+        // The batched executor uses exactly this predicate to decide
+        // whether to collapse the pipeline into one CLI spawn.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/in.csv","hasHeader":true}}},
+                {"id":"f1","position":{"x":0,"y":0},"data":{
+                  "label":"Filter","componentId":"xf.filter",
+                  "properties":{"predicate":"x > 0"}}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"Parquet","componentId":"snk.parquet",
+                  "properties":{"path":"/tmp/out.parquet"}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"f1",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"f1","target":"k1",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        assert_eq!(compiled.stages.len(), 3);
+        for stage in &compiled.stages {
+            assert!(
+                stage.is_pure_sql(),
+                "stage {} ({}) should be batchable",
+                stage.node_id,
+                stage.component_id
+            );
+        }
+    }
+
+    #[test]
+    fn rest_source_pipeline_is_not_batchable() {
+        // src.rest hits the Rust-side ureq driver mid-pipeline, so
+        // its stage must report is_pure_sql() = false. Any single
+        // false stage forces the per-stage execution path.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"REST","componentId":"src.rest",
+                  "properties":{"url":"https://example.com/users",
+                                "responsePath":"data"}}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/out.csv"}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"k1",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let any_non_batchable = compiled.stages.iter().any(|s| !s.is_pure_sql());
+        assert!(
+            any_non_batchable,
+            "src.rest pipeline must contain at least one non-pure stage"
+        );
     }
 
     #[test]
