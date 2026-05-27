@@ -945,23 +945,29 @@ impl DuckdbEngine {
                 plan::StageKind::View => None,
             };
             match count_target {
-                // Flat aggregate shape `SELECT 'n' AS n, COUNT(*) AS r
-                // FROM <t>` instead of the nested scalar-subquery shape
-                // `SELECT 'n' AS n, (SELECT COUNT(*) FROM <t>) AS r`.
-                // DuckDB's binder for foreign-table views (the postgres
-                // and mysql extensions' ATTACH-then-CREATE-VIEW path)
-                // chokes on the scalar-subquery shape with an internal
-                // "Failed to bind column reference count_star()" error.
-                // The flat shape evaluates fine on both regular views
-                // and extension-backed ones.
+                // Flat aggregate shape `SELECT 'x' AS _duckle_n,
+                // COUNT(*) AS _duckle_r FROM <t>` instead of the
+                // nested scalar-subquery shape with bare `n`/`r`
+                // aliases. Two real-world bugs the verbose names dodge:
+                //   - the bare `r` alias collided with a user node
+                //     literally named `r` (mysql_sink_then_source
+                //     test) and tripped DuckDB's binder with "Failed
+                //     to bind column reference r"
+                //   - the nested `(SELECT COUNT(*) FROM <t>) AS r`
+                //     shape tripped DuckDB's binder on foreign-table
+                //     views (the postgres / mysql extensions' ATTACH
+                //     path) with "Failed to bind column reference
+                //     count_star()"
+                // Verified empirically against the full integration
+                // suite + the mysql container in CI.
                 Some(t) => batched_sql.push_str(&format!(
-                    "COPY (SELECT '{}' AS n, COUNT(*) AS r FROM {}) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    "COPY (SELECT '{}' AS _duckle_n, COUNT(*) AS _duckle_r FROM {}) TO '{}' (FORMAT 'json', ARRAY false);\n",
                     stage.node_id.replace('\'', "''"),
                     plan::quote_ident(t),
                     path_to_sql(&marker),
                 )),
                 None => batched_sql.push_str(&format!(
-                    "COPY (SELECT '{}' AS n) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    "COPY (SELECT '{}' AS _duckle_n) TO '{}' (FORMAT 'json', ARRAY false);\n",
                     stage.node_id.replace('\'', "''"),
                     path_to_sql(&marker),
                 )),
@@ -6033,11 +6039,11 @@ fn read_marker(path: &Path) -> (String, Option<u64>) {
         return (String::new(), None);
     };
     let n = v
-        .get("n")
+        .get("_duckle_n")
         .and_then(JsonValue::as_str)
         .unwrap_or("")
         .to_string();
-    let r = v.get("r").and_then(|x| {
+    let r = v.get("_duckle_r").and_then(|x| {
         x.as_u64()
             .or_else(|| x.as_i64().map(|i| i.max(0) as u64))
     });
