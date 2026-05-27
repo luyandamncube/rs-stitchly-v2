@@ -4384,6 +4384,17 @@ fn build_window(
     };
     let partition = columns_list(props, "partitionBy");
     let order = columns_list(props, "orderBy");
+    // Every function build_window handles is order-sensitive: ROW_NUMBER,
+    // RANK, DENSE_RANK, LEAD, LAG, FIRST_VALUE, LAST_VALUE, NTILE all
+    // produce nonsense (or DuckDB errors) without ORDER BY. Catch it at
+    // compile time with a clear message instead of letting DuckDB raise
+    // "OVER clause requires ORDER BY" two stages later.
+    if order.is_empty() {
+        return Err(format!(
+            "Window function '{}' needs at least one Order By column (otherwise the result has no defined order)",
+            func
+        ));
+    }
     let mut over = String::new();
     if !partition.is_empty() {
         over.push_str(&format!(
@@ -4391,15 +4402,13 @@ fn build_window(
             partition.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ")
         ));
     }
-    if !order.is_empty() {
-        if !over.is_empty() {
-            over.push(' ');
-        }
-        over.push_str(&format!(
-            "ORDER BY {}",
-            order.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ")
-        ));
+    if !over.is_empty() {
+        over.push(' ');
     }
+    over.push_str(&format!(
+        "ORDER BY {}",
+        order.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ")
+    ));
     let out_name = string_prop(props, "outputName")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| func.clone());
@@ -8038,6 +8047,48 @@ mod tests {
         let sql = &compiled.stages[0].sql;
         assert!(sql.contains("dateformat='%d/%m/%Y'"), "missing dateformat: {}", sql);
         assert!(sql.contains("timestampformat='%d/%m/%Y %H:%M:%S'"), "missing timestampformat: {}", sql);
+    }
+
+    #[test]
+    fn window_without_order_by_errors_clearly() {
+        // xf.rank / xf.lead / xf.lag / etc. all need ORDER BY. DuckDB's
+        // native error for missing ORDER BY arrives two stages later
+        // and reads as "Binder Error: OVER clause requires ORDER BY";
+        // we want a planner-side error mentioning the function name and
+        // pointing at the right form field.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/x.csv","hasHeader":true}}},
+                {"id":"r","position":{"x":0,"y":0},"data":{
+                  "label":"Rank","componentId":"xf.rank",
+                  "properties":{"partitionBy":["dept"]}}},
+                {"id":"k","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"r",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"r","target":"k",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let err = compile(&p).err().expect("expected an Err from missing ORDER BY");
+        let msg = format!("{:?}", err);
+        assert!(
+            msg.to_lowercase().contains("order by"),
+            "error should mention Order By: {}",
+            msg
+        );
+        assert!(
+            msg.contains("rank"),
+            "error should mention the window function name: {}",
+            msg
+        );
     }
 
     #[test]
