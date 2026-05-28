@@ -6556,6 +6556,10 @@ html[dir='rtl'] .topbar-lang {
     height: 100%;
     overflow: auto;
     padding: 12px 14px;
+    /* Opaque background: the tab panels are position:absolute and stacked
+       over the canvas, so a transparent panel lets the canvas nodes bleed
+       through. Match the empty-state's bg-0. */
+    background: var(--bg-0);
 }
 .plan-view-toolbar {
     display: flex;
@@ -6661,6 +6665,8 @@ html[dir='rtl'] .topbar-lang {
     height: 100%;
     overflow: auto;
     padding: 12px 14px;
+    /* Opaque so the canvas underneath does not show through (see plan-view). */
+    background: var(--bg-0);
 }
 .run-summary {
     display: flex;

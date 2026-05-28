@@ -846,14 +846,22 @@ export default function App() {
     const contexts = useMemo(() => repo.filter(r => r.type === 'context'), [repo]);
 
     const buildSqlText = useCallback(async (): Promise<string | null> => {
-        const stages = await compilePipelineSql(nodes, edges);
-        if (!stages) return null;
-        return stages
-            .map(
-                s =>
-                    `-- ${s.kind.toUpperCase()} · ${s.label} (${s.node_id})\n${s.sql};\n`,
-            )
-            .join('\n');
+        // compilePipelineSql now throws the engine error on a compile
+        // failure (so the Plan tab can show it). For copy/export we just
+        // can't produce SQL in that case, so treat it as "nothing to do".
+        try {
+            const stages = await compilePipelineSql(nodes, edges);
+            if (!stages) return null;
+            return stages
+                .map(
+                    s =>
+                        `-- ${s.kind.toUpperCase()} · ${s.label} (${s.node_id})\n${s.sql};\n`,
+                )
+                .join('\n');
+        } catch (err) {
+            console.warn('buildSqlText: pipeline does not compile', err);
+            return null;
+        }
     }, [nodes, edges]);
 
     const handleCopySql = useCallback(async () => {

@@ -377,15 +377,15 @@ export async function compilePipelineSql(
     nodes: Node<DuckleNodeData>[],
     edges: Edge[],
 ): Promise<StageSql[] | null> {
+    // null = compilation not available (web build / no Tauri). A real
+    // compile failure THROWS the engine's error string so callers (the
+    // Plan tab) can surface it; swallowing it here previously made the
+    // Plan tab show a generic "appears here once it validates" placeholder
+    // even when the pipeline had a clear planner error.
     if (!isTauri()) return null;
-    try {
-        return await invoke<StageSql[]>('compile_pipeline', {
-            pipeline: { nodes, edges },
-        });
-    } catch (err) {
-        console.warn('compilePipelineSql failed', err);
-        return null;
-    }
+    return await invoke<StageSql[]>('compile_pipeline', {
+        pipeline: { nodes, edges },
+    });
 }
 
 // ---- Schedules ---------------------------------------------------------
