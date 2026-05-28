@@ -1447,7 +1447,10 @@ fn derive_output_columns(
         Some(c) => c,
         None => return None,
     };
-    // Pass-through transforms: column set unchanged.
+    // TRUE pass-through transforms: output column set is exactly the
+    // upstream's (they filter / reorder / retype rows, never add or
+    // rename a column). Safe to propagate the upstream set so downstream
+    // column-reference validation stays exact.
     if matches!(
         component,
         "xf.filter"
@@ -1462,7 +1465,20 @@ fn derive_output_columns(
             | "xf.fill_backward"
             | "xf.fill_constant"
             | "xf.cast"
-            | "xf.uuid"
+            | "xf.rank.filter"
+    ) {
+        return upstream.cloned();
+    }
+    // Column-ADDING transforms (window functions, row_hash, audit, uuid,
+    // ...) output the upstream columns PLUS one or more new ones whose
+    // names we don't track here. Returning the upstream set would make
+    // downstream validation falsely reject references to the column they
+    // add (e.g. xf.rownum adds "row_num", then a downstream xf.distinct
+    // on "row_num" looked "not found"). Return None = "schema unknown"
+    // so downstream validation is skipped rather than wrong.
+    if matches!(
+        component,
+        "xf.uuid"
             | "xf.audit"
             | "xf.row_hash"
             | "xf.rownum"
@@ -1473,15 +1489,10 @@ fn derive_output_columns(
             | "xf.first"
             | "xf.last"
             | "xf.ntile"
-            | "xf.rank.filter"
             | "xf.cumulative"
             | "xf.aggwin"
     ) {
-        // xf.row_hash, xf.audit, xf.aggwin etc. ADD columns - tracking
-        // the additions exactly would require parsing props; we
-        // conservatively keep the upstream set, which means we won't
-        // wrongly reject a user reference to a real existing column.
-        return upstream.cloned();
+        return None;
     }
     // xf.drop subtracts; xf.rename renames. Both decodeable from props.
     if component == "xf.drop" {
@@ -1548,17 +1559,27 @@ fn validate_column_refs(
         if cols.contains(c) {
             return Ok(());
         }
-        // Provide a helpful "did you mean" if there's an exact
-        // case-insensitive match - very common typo source for
-        // hand-typed column names.
-        let case_hint = cols
-            .iter()
-            .find(|k| k.eq_ignore_ascii_case(c))
-            .map(|k| format!(" (did you mean '{}'?)", k))
-            .unwrap_or_default();
+        // If there's a case-insensitive match, that's almost always the
+        // intended column (hand-typed case mismatch) - point straight at
+        // it. Otherwise list the columns that ARE available so the user
+        // can see the mismatch instead of guessing (e.g. an order_id
+        // reference against a customers file).
+        if let Some(k) = cols.iter().find(|k| k.eq_ignore_ascii_case(c)) {
+            return Err(format!(
+                "column '{}' not found in upstream (did you mean '{}'?)",
+                c, k
+            ));
+        }
+        let mut available: Vec<&str> = cols.iter().map(String::as_str).collect();
+        available.sort_unstable();
+        let shown = if available.len() > 15 {
+            format!("{}, ...", available[..15].join(", "))
+        } else {
+            available.join(", ")
+        };
         Err(format!(
-            "column '{}' not found in upstream{}",
-            c, case_hint
+            "column '{}' not found in upstream. Available columns: {}",
+            c, shown
         ))
     };
     // Helper for components whose props expose a single "column" key.
@@ -8444,6 +8465,75 @@ mod tests {
 
     fn pipeline_from_json(s: &str) -> PipelineDoc {
         serde_json::from_str(s).expect("valid pipeline JSON")
+    }
+
+    #[test]
+    fn downstream_ref_to_window_added_column_is_not_rejected() {
+        // Regression: xf.rownum ADDS a column ("row_num"). A downstream
+        // transform referencing that added column must NOT be falsely
+        // rejected by the column-existence validator. Column-adding
+        // transforms report "schema unknown" so downstream validation
+        // is skipped rather than wrong. (Reported as "most transforms
+        // erroneous" - the validator over-fired on column-adder chains.)
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/in.csv","hasHeader":true},
+                  "schema":[{"name":"amount","type":"int64","nullable":true}]}},
+                {"id":"rn","position":{"x":0,"y":0},"data":{
+                  "label":"Row Number","componentId":"xf.rownum",
+                  "properties":{"outputColumn":"row_num","orderBy":["amount"]}}},
+                {"id":"d1","position":{"x":0,"y":0},"data":{
+                  "label":"Distinct","componentId":"xf.distinct",
+                  "properties":{"columns":["row_num"]}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"rn",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"rn","target":"d1",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        // Must compile cleanly - the distinct on the rownum-added column
+        // must not trip the validator.
+        assert!(compile(&p).is_ok(), "rownum-added column must not be rejected downstream");
+    }
+
+    #[test]
+    fn distinct_on_missing_column_errors_with_available_list() {
+        // The genuine error case (issue screenshot): a customers CSV has
+        // no order_id column, so xf.distinct on order_id must fail at
+        // planner time with a message that lists the real columns.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/c.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"Index","type":"int64","nullable":true},
+                    {"name":"Customer Id","type":"string","nullable":true}
+                  ]}},
+                {"id":"d1","position":{"x":0,"y":0},"data":{
+                  "label":"Distinct","componentId":"xf.distinct",
+                  "properties":{"columns":["order_id"]}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"d1",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let err = compile(&p).unwrap_err().to_string();
+        assert!(err.contains("order_id"), "got: {}", err);
+        assert!(
+            err.contains("Available columns") && err.contains("Customer Id"),
+            "error should list available columns, got: {}",
+            err
+        );
     }
 
     #[test]
