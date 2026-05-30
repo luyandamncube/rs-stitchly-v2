@@ -93,8 +93,17 @@ function csvList(v: string, type: string): string {
         .join(', ');
 }
 
+/** Quote a column name as a SQL identifier so names with spaces, mixed
+ *  case, or reserved words survive. Mirrors the engine's quote_ident:
+ *  wrap in double quotes and double any embedded double quote. The
+ *  unconfigured-condition placeholder is left unquoted (it's not a real
+ *  column - it just shows the user the condition needs a column). */
+function quoteIdent(name: string): string {
+    return '"' + name.replace(/"/g, '""') + '"';
+}
+
 export function conditionToSql(c: Condition, columnType: string): string {
-    const col = c.column || '<column>';
+    const col = c.column ? quoteIdent(c.column) : '<column>';
     const v = c.value ?? '';
     const v2 = c.value2 ?? '';
     switch (c.op) {
