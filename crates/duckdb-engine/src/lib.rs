@@ -7463,7 +7463,18 @@ enum Dialect {
 /// not implicitly parse ISO date/timestamp strings (ORA-01861/01843).
 /// Snowflake + Databricks (JsonNative) keep the original behavior exactly.
 fn sql_literal(v: &JsonValue, target_type: Option<&str>, dialect: Dialect) -> String {
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    // Snowflake + Databricks treat backslash as a string-literal escape
+    // char by default, so a value like 'C:\path' silently loses its
+    // backslashes (verified: stored as 'C:path'). Double backslashes first
+    // for those dialects. Oracle / SQL Server / Cassandra take backslashes
+    // literally, so they only need single-quote doubling.
+    let quote = |s: &str| {
+        let body = match dialect {
+            Dialect::JsonNative => s.replace('\\', "\\\\").replace('\'', "''"),
+            _ => s.replace('\'', "''"),
+        };
+        format!("'{}'", body)
+    };
     match v {
         JsonValue::Null => "NULL".into(),
         JsonValue::Bool(b) => match dialect {
@@ -7511,7 +7522,11 @@ fn sql_literal(v: &JsonValue, target_type: Option<&str>, dialect: Dialect) -> St
             match dialect {
                 // PARSE_JSON is Snowflake/Databricks-only; elsewhere store
                 // the JSON as a plain quoted string (lands in VARCHAR/text).
-                Dialect::JsonNative => format!("PARSE_JSON('{}')", j.replace('\'', "''")),
+                // The JSON text can contain backslashes (escaped chars in
+                // string values), so escape it the same way as a string
+                // literal for the dialect - quote() handles backslash +
+                // single-quote doubling.
+                Dialect::JsonNative => format!("PARSE_JSON({})", quote(&j)),
                 _ => quote(&j),
             }
         }
@@ -9116,6 +9131,27 @@ mod sql_literal_tests {
         assert_eq!(sql_literal(&json!("hi"), None, d), "'hi'");
         assert_eq!(sql_literal(&json!([1, 2]), None, d), "PARSE_JSON('[1,2]')");
         assert_eq!(sql_literal(&json!({"k":1}), None, d), "PARSE_JSON('{\"k\":1}')");
+    }
+
+    #[test]
+    fn json_native_doubles_backslash() {
+        // Snowflake / Databricks treat backslash as a string escape, so a
+        // Windows path or regex would silently lose its backslashes
+        // (verified on a Snowflake-API emulator: 'C:\path' stored as
+        // 'C:path'). Double them. Oracle / SQL Server / Cassandra take
+        // backslash literally, so they must NOT be doubled there.
+        let v = json!("C:\\path\\file");
+        assert_eq!(sql_literal(&v, None, Dialect::JsonNative), "'C:\\\\path\\\\file'");
+        assert_eq!(sql_literal(&v, None, Dialect::Oracle), "'C:\\path\\file'");
+        assert_eq!(sql_literal(&v, None, Dialect::SqlServer), "'C:\\path\\file'");
+        assert_eq!(sql_literal(&v, None, Dialect::Cassandra), "'C:\\path\\file'");
+        // A JSON value with a backslash inside a string also gets it
+        // doubled in the PARSE_JSON payload for JsonNative.
+        let arr = json!(["a\\b"]);
+        assert_eq!(
+            sql_literal(&arr, None, Dialect::JsonNative),
+            "PARSE_JSON('[\"a\\\\\\\\b\"]')"
+        );
     }
 
     #[test]
