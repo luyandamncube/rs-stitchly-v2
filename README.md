@@ -217,7 +217,7 @@ For CSV / TSV sources, the **Schema** panel accepts an optional per-column **For
 
 | Group | Operations |
 |---|---|
-| **Fields** | Map (visual row mapper), Project / Select, Cast, Rename, Add / Drop / Reorder Column, Coalesce, UUID v4 |
+| **Fields** | Map (tMap-style visual mapper: joins a main input to up to 3 lookup inputs with inner / left joins and per-output expressions + filter), Project / Select, Cast, Rename, Add / Drop / Reorder Column, Coalesce, UUID v4 |
 | **Rows** | Filter (visual or raw SQL, with reject port), Distinct, Sample, Top N / Limit, Sort, Skip, Top N per Group, Forward Fill, Backward Fill, Constant Fill |
 | **Aggregate** | Group By, Rollup, Cube, Count, Window Aggregate, Cumulative, Approx Quantile (t-digest), Approx Count Distinct (HyperLogLog) |
 | **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti, Spatial Join |
