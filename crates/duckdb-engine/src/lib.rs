@@ -1623,28 +1623,20 @@ impl DuckdbEngine {
         db: &Path,
         spec: &OracleSinkSpec,
     ) -> Result<String, EngineError> {
-        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
-        let rows = self.run_rows(Some(db), &select)?;
-        if rows.is_empty() {
-            return Ok(format!("oracle: 0 rows to insert into {}", spec.table));
+        // Column names + DuckDB types in view order, used to auto-create the
+        // target, decide the fast bind path, and (fallback) render literals.
+        let describe = describe_columns(self, db, &spec.from_view);
+        if describe.is_empty() {
+            return Ok(format!("oracle: 0 columns to insert into {}", spec.table));
         }
-        let cols: Vec<String> = match rows[0].as_object() {
-            Some(o) => o.keys().cloned().collect(),
-            None => {
-                return Err(EngineError::Query(
-                    "oracle: upstream rows aren't JSON objects".into(),
-                ));
-            }
-        };
-        // Oracle's multitable INSERT ALL caps cumulative inserted values at
-        // 999 per statement, so even a single row of a 1000+ column table
-        // cannot be split small enough to fit. Reject it up front with a
-        // clear message instead of letting Oracle raise ORA-00913.
+        let cols: Vec<String> = describe.iter().map(|(n, _)| n.clone()).collect();
+        let col_types: std::collections::HashMap<String, String> =
+            describe.iter().cloned().collect();
+        // Oracle limits a table to 1000 columns; reject up front with a clear
+        // message rather than failing deep in CREATE TABLE / INSERT.
         if cols.len() >= 1000 {
             return Err(EngineError::Query(format!(
-                "oracle: table has {} columns; Oracle's multitable INSERT ALL \
-                 limits cumulative inserted values to 999 per statement, so \
-                 tables with 1000+ columns cannot be loaded this way",
+                "oracle: {} columns exceeds Oracle's 1000-column table limit",
                 cols.len()
             )));
         }
@@ -1657,20 +1649,54 @@ impl DuckdbEngine {
             .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join(", ");
+
+        // Decide whether every column can take the fast array-bind path. Bind
+        // values are sent as strings and converted by Oracle: numbers / text
+        // implicitly, DATE / TIMESTAMP via an explicit TO_DATE / TO_TIMESTAMP
+        // fed a canonical strftime string. Time-zone, BLOB and nested types
+        // are not handled this way, so any of them drops the whole sink to the
+        // per-literal INSERT ALL fallback below (no behavior change for them).
+        let mut bindable = true;
+        let mut placeholders: Vec<String> = Vec::with_capacity(cols.len());
+        let mut select_items: Vec<String> = Vec::with_capacity(cols.len());
+        for (idx, (name, duck)) in describe.iter().enumerate() {
+            let up = duck.trim().to_ascii_uppercase();
+            let n = idx + 1;
+            let qn = plan::quote_ident(name);
+            if up.contains("TIME ZONE")
+                || up.starts_with("BLOB")
+                || up.starts_with("BYTEA")
+                || up.starts_with("BINARY")
+                || up.starts_with("VARBINARY")
+                || up.ends_with("[]")
+                || up.starts_with("STRUCT")
+                || up.starts_with("MAP")
+                || up.starts_with("LIST")
+                || up.starts_with("UNION")
+            {
+                bindable = false;
+                break;
+            } else if up == "DATE" {
+                placeholders.push(format!("TO_DATE(:{}, 'YYYY-MM-DD')", n));
+                select_items.push(format!("strftime({}, '%Y-%m-%d') AS {}", qn, qn));
+            } else if up.starts_with("TIMESTAMP") || up == "DATETIME" {
+                placeholders.push(format!("TO_TIMESTAMP(:{}, 'YYYY-MM-DD HH24:MI:SS.FF6')", n));
+                select_items.push(format!("strftime({}, '%Y-%m-%d %H:%M:%S.%f') AS {}", qn, qn));
+            } else {
+                placeholders.push(format!(":{}", n));
+                select_items.push(qn);
+            }
+        }
+
         let conn = oracle::Connection::connect(&spec.user, &spec.password, &spec.connect)
             .map_err(|e| EngineError::Query(format!("oracle connect: {}", e)))?;
-        // Upstream DuckDB column types, used both to auto-create the table
-        // and (issue: dialect-mismatch) to render Oracle-correct literals in
-        // the INSERT loop (bool -> 1/0, DATE/TIMESTAMP strings -> TO_DATE /
-        // TO_TIMESTAMP). Kept in fn scope so the insert loop can see it.
-        let col_types: std::collections::HashMap<String, String> =
-            describe_columns(self, db, &spec.from_view).into_iter().collect();
-        // Auto-create the target table if it doesn't exist yet, inferring
-        // column types from the upstream DuckDB view. The sink otherwise
-        // only INSERTs, so loading into a not-yet-created table failed
-        // (issue #8: "newly created tables"). Oracle has no CREATE TABLE
-        // IF NOT EXISTS, so wrap it in a PL/SQL block that swallows
-        // ORA-00955 (name is already used) and re-raises anything else.
+        // Pin the decimal separator so string-bound numbers parse with '.'
+        // regardless of the server locale (NLS_NUMERIC_CHARACTERS).
+        let _ = conn.execute("ALTER SESSION SET NLS_NUMERIC_CHARACTERS = '.,'", &[]);
+
+        // Auto-create the target table if absent, inferring column types from
+        // the upstream DuckDB view (issue #8). Oracle has no CREATE TABLE IF
+        // NOT EXISTS, so swallow ORA-00955 (name already used) in PL/SQL.
         {
             let col_defs = cols
                 .iter()
@@ -1692,26 +1718,99 @@ impl DuckdbEngine {
             conn.execute(&create_plsql, &[])
                 .map_err(|e| EngineError::Query(format!("oracle create table: {}", e)))?;
         }
+
+        // Commit periodically, not after every statement: a commit forces a
+        // redo-log flush, so per-batch commits dominated large-load wall-clock.
+        const COMMIT_EVERY: usize = 200_000;
+
+        // Fast path: one prepared INSERT, array-bound and array-executed
+        // (dpiStmt_executeMany). Replaces the old per-99-row INSERT ALL, each
+        // a unique literal statement Oracle had to hard-parse.
+        if bindable {
+            let select = format!(
+                "SELECT {} FROM {}",
+                select_items.join(", "),
+                plan::quote_ident(&spec.from_view)
+            );
+            let rows = self.run_rows(Some(db), &select)?;
+            if rows.is_empty() {
+                return Ok(format!("oracle: 0 rows to insert into {}", spec.table));
+            }
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({})",
+                qualified,
+                cols_list,
+                placeholders.join(", ")
+            );
+            const BIND_BATCH: usize = 5000;
+            let mut batch = conn
+                .batch(&insert_sql, BIND_BATCH)
+                .build()
+                .map_err(|e| EngineError::Query(format!("oracle batch prepare: {}", e)))?;
+            let mut total = 0_usize;
+            let mut uncommitted = 0_usize;
+            for row in &rows {
+                if total % BIND_BATCH == 0 {
+                    self.check_cancelled()?;
+                }
+                let obj = row.as_object();
+                // Bind every value as a string; the SQL placeholders and
+                // Oracle implicit conversion turn it back into the column type.
+                let binds: Vec<Option<String>> = cols
+                    .iter()
+                    .map(|c| match obj.and_then(|o| o.get(c)) {
+                        None | Some(JsonValue::Null) => None,
+                        Some(JsonValue::String(s)) => Some(s.clone()),
+                        Some(JsonValue::Bool(b)) => {
+                            Some(if *b { "1".to_string() } else { "0".to_string() })
+                        }
+                        Some(JsonValue::Number(num)) => Some(num.to_string()),
+                        Some(other) => Some(other.to_string()),
+                    })
+                    .collect();
+                let refs: Vec<&dyn oracle::sql_type::ToSql> =
+                    binds.iter().map(|b| b as &dyn oracle::sql_type::ToSql).collect();
+                batch
+                    .append_row(&refs)
+                    .map_err(|e| EngineError::Query(format!("oracle insert: {}", e)))?;
+                total += 1;
+                uncommitted += 1;
+                if uncommitted >= COMMIT_EVERY {
+                    batch
+                        .execute()
+                        .map_err(|e| EngineError::Query(format!("oracle insert: {}", e)))?;
+                    conn.commit()
+                        .map_err(|e| EngineError::Query(format!("oracle commit: {}", e)))?;
+                    uncommitted = 0;
+                }
+            }
+            batch
+                .execute()
+                .map_err(|e| EngineError::Query(format!("oracle insert: {}", e)))?;
+            conn.commit()
+                .map_err(|e| EngineError::Query(format!("oracle commit: {}", e)))?;
+            return Ok(format!("oracle: inserted {} rows into {}", total, qualified));
+        }
+
+        // Fallback path (time-zone / BLOB / nested types): per-literal INSERT
+        // ALL, capped under Oracle's 999 cumulative-value limit (issue #11).
+        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
+        let rows = self.run_rows(Some(db), &select)?;
+        if rows.is_empty() {
+            return Ok(format!("oracle: 0 rows to insert into {}", spec.table));
+        }
         let mut total = 0_usize;
-        // Cap rows per INSERT ALL so cols.len() * chunk.len() stays under
-        // Oracle's 999 cumulative-value limit (issue #11: ORA-00913).
+        let mut uncommitted = 0_usize;
         let rows_per_stmt = oracle_insert_all_rows_per_stmt(cols.len(), spec.batch_size);
         for chunk in rows.chunks(rows_per_stmt) {
             self.check_cancelled()?;
-            // Oracle's "INSERT ALL" syntax:
-            //   INSERT ALL
-            //     INTO tbl (cols) VALUES (...)
-            //     INTO tbl (cols) VALUES (...)
-            //   SELECT 1 FROM dual;
             let mut sql = String::from("INSERT ALL");
             for row in chunk {
                 let row_obj = row.as_object();
                 let vals: Vec<String> = cols
                     .iter()
                     .map(|c| {
-                        let v = row_obj
-                            .and_then(|o| o.get(c))
-                            .unwrap_or(&JsonValue::Null);
+                        let v = row_obj.and_then(|o| o.get(c)).unwrap_or(&JsonValue::Null);
                         sql_literal(v, col_types.get(c).map(|s| s.as_str()), Dialect::Oracle)
                     })
                     .collect();
@@ -1725,14 +1824,19 @@ impl DuckdbEngine {
             sql.push_str(" SELECT 1 FROM dual");
             conn.execute(&sql, &[])
                 .map_err(|e| EngineError::Query(format!("oracle insert: {}", e)))?;
+            total += chunk.len();
+            uncommitted += chunk.len();
+            if uncommitted >= COMMIT_EVERY {
+                conn.commit()
+                    .map_err(|e| EngineError::Query(format!("oracle commit: {}", e)))?;
+                uncommitted = 0;
+            }
+        }
+        if uncommitted > 0 {
             conn.commit()
                 .map_err(|e| EngineError::Query(format!("oracle commit: {}", e)))?;
-            total += chunk.len();
         }
-        Ok(format!(
-            "oracle: inserted {} rows into {}",
-            total, qualified
-        ))
+        Ok(format!("oracle: inserted {} rows into {}", total, qualified))
     }
 
     #[cfg(not(feature = "oracle"))]
@@ -1809,11 +1913,12 @@ impl DuckdbEngine {
         // Issue #4: the default Oracle prefetch is tiny (often 1 row
         // per round trip). On a 10 000-row x 37-column table that's
         // 10 000 network round trips, which presented to users as
-        // "the query never finishes". 1 000 rows per fetch keeps the
-        // socket busy and matches typical sqlplus / ODBC defaults.
+        // "the query never finishes". A large prefetch keeps the socket
+        // busy: at 5 000 rows/fetch a 2M-row pull is ~400 round trips
+        // instead of ~2 000, which measurably cuts large-table read time.
         let mut stmt = conn
             .statement(&spec.query)
-            .prefetch_rows(1000)
+            .prefetch_rows(5000)
             .build()
             .map_err(|e| EngineError::Query(format!("oracle prepare: {}", e)))?;
         let rs = stmt
