@@ -36,9 +36,9 @@ use plan::{
     KafkaSourceSpec, KinesisSourceSpec, MilvusSourceSpec, MongoSinkSpec, MongoSourceSpec,
     NatsSinkSpec, NatsSourceSpec, OracleSinkSpec, OracleSourceSpec, PubSubSinkSpec,
     PubSubSourceSpec, QdrantSourceSpec, RabbitSinkSpec, RabbitSourceSpec, RedisSinkSpec,
-    RedisSourceSpec, RestPagination, RestResponseFormat, RestSourceSpec, ShellSpec, SnowflakeAuth,
-    SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec, WasmSpec,
-    WeaviateSourceSpec, WebhookSourceSpec, WebhookSpec, XmlSinkSpec, XmlSourceSpec,
+    RedisSourceSpec, RestPagination, RestResponseFormat, RestSourceSpec, RuntimeSpec, ShellSpec,
+    SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec,
+    WasmSpec, WeaviateSourceSpec, WebhookSourceSpec, WebhookSpec, XmlSinkSpec, XmlSourceSpec,
 };
 
 #[derive(Debug, Error)]
@@ -519,7 +519,7 @@ impl DuckdbEngine {
                 // isn't composed into the parent (the side-effect /
                 // trigger model). Full block-scope composition needs
                 // the DAG-engine refactor noted in the README.
-                if let Some(ref sub_path) = stage.run_pipeline_path {
+                if let Some(RuntimeSpec::RunPipeline(sub_path)) = stage.runtime.as_ref() {
                     if let Err(e) = self.run_subpipeline(sub_path) {
                         result = Err(EngineError::Query(format!(
                             "ctl.runpipeline({}): {}",
@@ -530,11 +530,10 @@ impl DuckdbEngine {
                 }
                 // ctl.iterate: run the sub-pipeline N times, substituting
                 // ${ITER_INDEX} into the pipeline JSON before each call.
-                if let (Some(ref iter_path), Some(count)) =
-                    (stage.iterate_pipeline_path.as_ref(), stage.iterate_count)
+                if let Some(RuntimeSpec::Iterate { path: iter_path, count }) = stage.runtime.as_ref()
                 {
                     let mut iter_err: Option<String> = None;
-                    for i in 0..count {
+                    for i in 0..*count {
                         let mut subs = std::collections::HashMap::new();
                         subs.insert("ITER_INDEX".to_string(), i.to_string());
                         if let Err(e) = self.run_subpipeline_with_subs(iter_path, &subs) {
@@ -552,7 +551,7 @@ impl DuckdbEngine {
                 }
                 // ctl.foreach: read upstream rows, run the sub-pipeline
                 // once per row with ${ITER_ITEM_<FIELD>} substitutions.
-                if let Some(ref each_path) = stage.foreach_pipeline_path {
+                if let Some(RuntimeSpec::Foreach(each_path)) = stage.runtime.as_ref() {
                     // Materialize upstream first if it isn't already
                     // (the stage's own pass-through SQL runs *after*
                     // these hooks, so the upstream view is what we
@@ -600,157 +599,140 @@ impl DuckdbEngine {
                         continue;
                     }
                 }
-                result = if let Some(spec) = stage.webhook.as_ref() {
+                result = match stage.runtime.as_ref() {
                     // HTTP sink (snk.webhook / snk.rest): materialize the
-                    // upstream as JSON via DuckDB, then dispatch one
-                    // request per row or one batched request via ureq.
-                    self.run_webhook(&db_path, &secret_prefix, spec)
-                } else if let Some(spec) = stage.snowflake_sink.as_ref() {
-                    // Snowflake SQL API: multi-row INSERT statements
-                    // batched at spec.batch_size and POSTed to /api/v2/
-                    // statements with Bearer PAT auth.
-                    self.run_snowflake_sink(&db_path, &secret_prefix, spec)
-                } else if let Some(spec) = stage.databricks_sink.as_ref() {
-                    // Databricks SQL Statement Execution API: same shape
-                    // as Snowflake, different body keys + backtick quoting.
-                    self.run_databricks_sink(&db_path, &secret_prefix, spec)
-                } else if let Some(spec) = stage.snowflake_source.as_ref() {
-                    // Snowflake source: POST SELECT, parse response,
-                    // materialize as node_id via read_json_auto.
-                    self.run_snowflake_source(&db_path, spec)
-                } else if let Some(spec) = stage.databricks_source.as_ref() {
-                    self.run_databricks_source(&db_path, spec)
-                } else if let Some(spec) = stage.rest_source.as_ref() {
+                    // upstream as JSON via DuckDB, then dispatch one request
+                    // per row or one batched request via ureq.
+                    Some(RuntimeSpec::Webhook(spec)) => {
+                        self.run_webhook(&db_path, &secret_prefix, spec)
+                    }
+                    // Snowflake / Databricks SQL API sinks: multi-row INSERTs
+                    // batched and POSTed with Bearer / token auth.
+                    Some(RuntimeSpec::SnowflakeSink(spec)) => {
+                        self.run_snowflake_sink(&db_path, &secret_prefix, spec)
+                    }
+                    Some(RuntimeSpec::DatabricksSink(spec)) => {
+                        self.run_databricks_sink(&db_path, &secret_prefix, spec)
+                    }
+                    // Snowflake / Databricks sources: POST SELECT, parse the
+                    // response, materialize as node_id via read_json_auto.
+                    Some(RuntimeSpec::SnowflakeSource(spec)) => {
+                        self.run_snowflake_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::DatabricksSource(spec)) => {
+                        self.run_databricks_source(&db_path, spec)
+                    }
                     // Generic HTTP source: fetch URL, walk response_path,
                     // follow cursor pagination, materialize as table.
-                    self.run_rest_source(&db_path, spec)
-                } else if let Some(spec) = stage.elastic_source.as_ref() {
-                    // Elasticsearch / OpenSearch _search source with
-                    // from+size pagination.
-                    self.run_elastic_source(&db_path, spec)
-                } else if let Some(spec) = stage.mongo_sink.as_ref() {
-                    // MongoDB insert_many via official async driver +
-                    // a tokio block_on per stage.
-                    self.run_mongo_sink(&db_path, spec)
-                } else if let Some(spec) = stage.mongo_source.as_ref() {
-                    self.run_mongo_source(&db_path, spec)
-                } else if let Some(spec) = stage.clickhouse_sink.as_ref() {
-                    // ClickHouse HTTP sink: POST INSERT ... FORMAT JSONEachRow.
-                    self.run_clickhouse_sink(&db_path, spec)
-                } else if let Some(spec) = stage.clickhouse_source.as_ref() {
-                    self.run_clickhouse_source(&db_path, spec)
-                } else if let Some(spec) = stage.sqlserver_sink.as_ref() {
-                    self.run_sqlserver_sink(&db_path, spec)
-                } else if let Some(spec) = stage.sqlserver_source.as_ref() {
-                    self.run_sqlserver_source(&db_path, spec)
-                } else if let Some(spec) = stage.cassandra_sink.as_ref() {
-                    self.run_cassandra_sink(&db_path, spec)
-                } else if let Some(spec) = stage.cassandra_source.as_ref() {
-                    self.run_cassandra_source(&db_path, spec)
-                } else if let Some(spec) = stage.oracle_sink.as_ref() {
-                    self.run_oracle_sink(&db_path, spec)
-                } else if let Some(spec) = stage.oracle_source.as_ref() {
-                    self.run_oracle_source(&db_path, spec)
-                } else if let Some(spec) = stage.adbc_source.as_ref() {
-                    self.run_adbc_source(&db_path, spec)
-                } else if let Some(spec) = stage.attach_parquet_source.as_ref() {
-                    self.run_attach_parquet_source(&db_path, spec)
-                } else if let Some(spec) = stage.redis_sink.as_ref() {
-                    self.run_redis_sink(&db_path, spec)
-                } else if let Some(spec) = stage.redis_source.as_ref() {
-                    self.run_redis_source(&db_path, spec)
-                } else if let Some(spec) = stage.qdrant_source.as_ref() {
-                    self.run_qdrant_source(&db_path, spec)
-                } else if let Some(spec) = stage.weaviate_source.as_ref() {
-                    self.run_weaviate_source(&db_path, spec)
-                } else if let Some(spec) = stage.milvus_source.as_ref() {
-                    self.run_milvus_source(&db_path, spec)
-                } else if let Some(spec) = stage.format_source.as_ref() {
-                    self.run_format_source(&db_path, spec)
-                } else if let Some(spec) = stage.format_sink.as_ref() {
-                    self.run_format_sink(&db_path, spec)
-                } else if let Some(spec) = stage.kafka_sink.as_ref() {
-                    self.run_kafka_sink(&db_path, spec)
-                } else if let Some(spec) = stage.kafka_source.as_ref() {
-                    self.run_kafka_source(&db_path, spec)
-                } else if let Some(spec) = stage.avro_source.as_ref() {
-                    self.run_avro_source(&db_path, spec)
-                } else if let Some(spec) = stage.nats_sink.as_ref() {
-                    self.run_nats_sink(&db_path, spec)
-                } else if let Some(spec) = stage.nats_source.as_ref() {
-                    self.run_nats_source(&db_path, spec)
-                } else if let Some(spec) = stage.pubsub_sink.as_ref() {
-                    self.run_pubsub_sink(&db_path, spec)
-                } else if let Some(spec) = stage.pubsub_source.as_ref() {
-                    self.run_pubsub_source(&db_path, spec)
-                } else if let Some(spec) = stage.xml_source.as_ref() {
-                    self.run_xml_source(&db_path, spec)
-                } else if let Some(spec) = stage.xml_sink.as_ref() {
-                    self.run_xml_sink(&db_path, spec)
-                } else if let Some(spec) = stage.avro_sink.as_ref() {
-                    self.run_avro_sink(&db_path, spec)
-                } else if let Some(spec) = stage.rabbit_sink.as_ref() {
-                    self.run_rabbit_sink(&db_path, spec)
-                } else if let Some(spec) = stage.rabbit_source.as_ref() {
-                    self.run_rabbit_source(&db_path, spec)
-                } else if let Some(spec) = stage.git_source.as_ref() {
-                    self.run_git_source(&db_path, spec)
-                } else if let Some(spec) = stage.shell.as_ref() {
-                    self.run_shell(&db_path, spec)
-                } else if let Some(spec) = stage.ftp_source.as_ref() {
-                    self.run_ftp_source(&db_path, spec)
-                } else if let Some(spec) = stage.clipboard_source.as_ref() {
-                    self.run_clipboard_source(&db_path, spec)
-                } else if let Some(spec) = stage.ai_embed.as_ref() {
-                    self.run_ai_embed(&db_path, spec)
-                } else if let Some(spec) = stage.wasm.as_ref() {
-                    self.run_wasm(&db_path, spec)
-                } else if let Some(spec) = stage.javascript.as_ref() {
-                    self.run_javascript(&db_path, spec)
-                } else if let Some(spec) = stage.ai_chunk.as_ref() {
-                    self.run_ai_chunk(&db_path, spec)
-                } else if let Some(spec) = stage.ai_pii.as_ref() {
-                    self.run_ai_pii(&db_path, spec)
-                } else if let Some(spec) = stage.ai_llm.as_ref() {
-                    self.run_ai_llm(&db_path, spec)
-                } else if let Some(spec) = stage.ai_classify.as_ref() {
-                    self.run_ai_classify(&db_path, spec)
-                } else if let Some(spec) = stage.ai_dedupe.as_ref() {
-                    self.run_ai_dedupe(&db_path, spec)
-                } else if let Some(spec) = stage.email_source.as_ref() {
-                    self.run_email_source(&db_path, spec)
-                } else if let Some(spec) = stage.webhook_source.as_ref() {
-                    self.run_webhook_source(&db_path, spec)
-                } else if let Some(spec) = stage.email_sink.as_ref() {
-                    self.run_email_sink(&db_path, spec)
-                } else if let Some(spec) = stage.dynamodb_source.as_ref() {
-                    self.run_dynamodb_source(&db_path, spec)
-                } else if let Some(spec) = stage.kinesis_source.as_ref() {
-                    self.run_kinesis_source(&db_path, spec)
-                } else if let Some(spec) = stage.upsert.as_ref() {
-                    // Relational-DB upsert: DESCRIBE the upstream first to
-                    // get the column list, then assemble INSERT ... ON
-                    // CONFLICT (Postgres) or ON DUPLICATE KEY UPDATE (MySQL).
-                    self.run_upsert(&db_path, &secret_prefix, spec)
-                } else if let Some(spec) = stage.text_search.as_ref() {
-                    // FTS in DuckDB v1.5+ can't see tables created in the
-                    // same -c invocation, so we stage in one CLI call then
-                    // index + query in a second.
-                    self.run_text_search(&db_path, &secret_prefix, &stage.node_id, spec)
-                } else if stage.sink_mode.as_deref() == Some("error")
-                    && stage
-                        .sink_path
-                        .as_deref()
-                        .map(is_local_path)
-                        .unwrap_or(false)
-                    && std::path::Path::new(stage.sink_path.as_deref().unwrap()).exists()
-                {
-                    Err(EngineError::Query(format!(
-                        "Output file already exists: {} (write mode is 'Error if exists')",
-                        stage.sink_path.as_deref().unwrap()
-                    )))
-                } else {
-                    self.run(Some(&db_path), &sql, false)
+                    Some(RuntimeSpec::RestSource(spec)) => self.run_rest_source(&db_path, spec),
+                    Some(RuntimeSpec::ElasticSource(spec)) => {
+                        self.run_elastic_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::MongoSink(spec)) => self.run_mongo_sink(&db_path, spec),
+                    Some(RuntimeSpec::MongoSource(spec)) => self.run_mongo_source(&db_path, spec),
+                    Some(RuntimeSpec::ClickhouseSink(spec)) => {
+                        self.run_clickhouse_sink(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::ClickhouseSource(spec)) => {
+                        self.run_clickhouse_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::SqlserverSink(spec)) => {
+                        self.run_sqlserver_sink(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::SqlserverSource(spec)) => {
+                        self.run_sqlserver_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::CassandraSink(spec)) => {
+                        self.run_cassandra_sink(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::CassandraSource(spec)) => {
+                        self.run_cassandra_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::OracleSink(spec)) => self.run_oracle_sink(&db_path, spec),
+                    Some(RuntimeSpec::OracleSource(spec)) => self.run_oracle_source(&db_path, spec),
+                    Some(RuntimeSpec::AdbcSource(spec)) => self.run_adbc_source(&db_path, spec),
+                    Some(RuntimeSpec::AttachParquetSource(spec)) => {
+                        self.run_attach_parquet_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::RedisSink(spec)) => self.run_redis_sink(&db_path, spec),
+                    Some(RuntimeSpec::RedisSource(spec)) => self.run_redis_source(&db_path, spec),
+                    Some(RuntimeSpec::QdrantSource(spec)) => self.run_qdrant_source(&db_path, spec),
+                    Some(RuntimeSpec::WeaviateSource(spec)) => {
+                        self.run_weaviate_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::MilvusSource(spec)) => self.run_milvus_source(&db_path, spec),
+                    Some(RuntimeSpec::FormatSource(spec)) => self.run_format_source(&db_path, spec),
+                    Some(RuntimeSpec::FormatSink(spec)) => self.run_format_sink(&db_path, spec),
+                    Some(RuntimeSpec::KafkaSink(spec)) => self.run_kafka_sink(&db_path, spec),
+                    Some(RuntimeSpec::KafkaSource(spec)) => self.run_kafka_source(&db_path, spec),
+                    Some(RuntimeSpec::AvroSource(spec)) => self.run_avro_source(&db_path, spec),
+                    Some(RuntimeSpec::NatsSink(spec)) => self.run_nats_sink(&db_path, spec),
+                    Some(RuntimeSpec::NatsSource(spec)) => self.run_nats_source(&db_path, spec),
+                    Some(RuntimeSpec::PubsubSink(spec)) => self.run_pubsub_sink(&db_path, spec),
+                    Some(RuntimeSpec::PubsubSource(spec)) => self.run_pubsub_source(&db_path, spec),
+                    Some(RuntimeSpec::XmlSource(spec)) => self.run_xml_source(&db_path, spec),
+                    Some(RuntimeSpec::XmlSink(spec)) => self.run_xml_sink(&db_path, spec),
+                    Some(RuntimeSpec::AvroSink(spec)) => self.run_avro_sink(&db_path, spec),
+                    Some(RuntimeSpec::RabbitSink(spec)) => self.run_rabbit_sink(&db_path, spec),
+                    Some(RuntimeSpec::RabbitSource(spec)) => self.run_rabbit_source(&db_path, spec),
+                    Some(RuntimeSpec::GitSource(spec)) => self.run_git_source(&db_path, spec),
+                    Some(RuntimeSpec::Shell(spec)) => self.run_shell(&db_path, spec),
+                    Some(RuntimeSpec::FtpSource(spec)) => self.run_ftp_source(&db_path, spec),
+                    Some(RuntimeSpec::ClipboardSource(spec)) => {
+                        self.run_clipboard_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::AiEmbed(spec)) => self.run_ai_embed(&db_path, spec),
+                    Some(RuntimeSpec::Wasm(spec)) => self.run_wasm(&db_path, spec),
+                    Some(RuntimeSpec::Javascript(spec)) => self.run_javascript(&db_path, spec),
+                    Some(RuntimeSpec::AiChunk(spec)) => self.run_ai_chunk(&db_path, spec),
+                    Some(RuntimeSpec::AiPii(spec)) => self.run_ai_pii(&db_path, spec),
+                    Some(RuntimeSpec::AiLlm(spec)) => self.run_ai_llm(&db_path, spec),
+                    Some(RuntimeSpec::AiClassify(spec)) => self.run_ai_classify(&db_path, spec),
+                    Some(RuntimeSpec::AiDedupe(spec)) => self.run_ai_dedupe(&db_path, spec),
+                    Some(RuntimeSpec::EmailSource(spec)) => self.run_email_source(&db_path, spec),
+                    Some(RuntimeSpec::WebhookSource(spec)) => {
+                        self.run_webhook_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::EmailSink(spec)) => self.run_email_sink(&db_path, spec),
+                    Some(RuntimeSpec::DynamodbSource(spec)) => {
+                        self.run_dynamodb_source(&db_path, spec)
+                    }
+                    Some(RuntimeSpec::KinesisSource(spec)) => {
+                        self.run_kinesis_source(&db_path, spec)
+                    }
+                    // Relational-DB upsert: DESCRIBE the upstream first to get
+                    // the column list, then assemble INSERT ... ON CONFLICT
+                    // (Postgres) or ON DUPLICATE KEY UPDATE (MySQL).
+                    Some(RuntimeSpec::Upsert(spec)) => {
+                        self.run_upsert(&db_path, &secret_prefix, spec)
+                    }
+                    // FTS in DuckDB v1.5+ can't see tables created in the same
+                    // -c invocation, so we stage in one CLI call then index +
+                    // query in a second.
+                    Some(RuntimeSpec::TextSearch(spec)) => {
+                        self.run_text_search(&db_path, &secret_prefix, &stage.node_id, spec)
+                    }
+                    // Control-flow variants (RunPipeline / InstallFallback /
+                    // Iterate / Foreach) already ran their side effect above, so
+                    // they fall through here to the stage's pass-through SQL -
+                    // as does a plain SQL stage (None).
+                    _ => {
+                        if stage.sink_mode.as_deref() == Some("error")
+                            && stage
+                                .sink_path
+                                .as_deref()
+                                .map(is_local_path)
+                                .unwrap_or(false)
+                            && std::path::Path::new(stage.sink_path.as_deref().unwrap()).exists()
+                        {
+                            Err(EngineError::Query(format!(
+                                "Output file already exists: {} (write mode is 'Error if exists')",
+                                stage.sink_path.as_deref().unwrap()
+                            )))
+                        } else {
+                            self.run(Some(&db_path), &sql, false)
+                        }
+                    }
                 };
                 if result.is_ok() {
                     break;
@@ -842,9 +824,9 @@ impl DuckdbEngine {
                     break;
                 }
             }
-            // ctl.try sets install_fallback_path on the stage itself;
+            // ctl.try sets the InstallFallback runtime spec on the stage;
             // after a successful run, install it for subsequent stages.
-            if let Some(ref p) = stage.install_fallback_path {
+            if let Some(RuntimeSpec::InstallFallback(p)) = stage.runtime.as_ref() {
                 installed_fallback = Some(p.clone());
             }
         }
@@ -8410,17 +8392,16 @@ fn redact_secret_values(sql: &str, secrets: &[Secret]) -> String {
 /// complete + self-documenting instead of emitting a bare empty stage.
 fn procedural_note(s: &plan::Stage) -> String {
     let cid = s.component_id.as_str();
-    let body = if let Some(p) = s.run_pipeline_path.as_deref() {
+    let body = if let Some(RuntimeSpec::RunPipeline(p)) = s.runtime.as_ref() {
         format!("control step: runs sub-pipeline '{}' as a side effect", p)
-    } else if let Some(p) = s.iterate_pipeline_path.as_deref() {
+    } else if let Some(RuntimeSpec::Iterate { path, count }) = s.runtime.as_ref() {
         format!(
             "control step: runs sub-pipeline '{}' x{} (ctl.iterate)",
-            p,
-            s.iterate_count.unwrap_or(0)
+            path, count
         )
-    } else if let Some(p) = s.foreach_pipeline_path.as_deref() {
+    } else if let Some(RuntimeSpec::Foreach(p)) = s.runtime.as_ref() {
         format!("control step: runs sub-pipeline '{}' once per upstream row (ctl.foreach)", p)
-    } else if let Some(p) = s.install_fallback_path.as_deref() {
+    } else if let Some(RuntimeSpec::InstallFallback(p)) = s.runtime.as_ref() {
         format!("control step: installs fallback pipeline '{}' (ctl.try)", p)
     } else if cid.starts_with("snk.") {
         match s.from.as_deref() {

@@ -36,169 +36,12 @@ pub struct Stage {
     /// enforce "error if exists" before writing.
     pub sink_path: Option<String>,
     pub sink_mode: Option<String>,
-    /// For relational-DB sinks in upsert mode: the planner can't
-    /// enumerate the upstream's non-key columns up front, so it leaves
-    /// `sql` empty and the executor introspects the materialized
-    /// upstream (DESCRIBE) before assembling the final INSERT ... ON
-    /// CONFLICT statement.
-    pub upsert: Option<UpsertSpec>,
-    /// For xf.ai.text_search: in DuckDB v1.5.x the fts PRAGMA can't see
-    /// tables created in the same -c invocation. The planner records
-    /// the spec; the executor runs two CLI calls (stage then index +
-    /// query) so the PRAGMA sees committed state. Works unchanged on
-    /// v1.4 too.
-    pub text_search: Option<TextSearchSpec>,
-    /// ctl.runpipeline: when set, the executor reads + runs another
-    /// pipeline file as a side effect *before* propagating this
-    /// stage's pass-through view. Lets a parent pipeline trigger
-    /// helper pipelines (refresh dimension tables, kick off a cleanup,
-    /// etc.) without the full block-scope DAG refactor that
-    /// ctl.iterate / ctl.foreach / ctl.try need.
-    pub run_pipeline_path: Option<String>,
-    /// ctl.try: when set, the executor installs this path as a
-    /// fallback pipeline. If any subsequent stage in the same
-    /// execution fails, the fallback runs as a side effect before
-    /// the original error surfaces. Useful for notifications,
-    /// rollbacks, cleanup. NOT a true block-scoped try with
-    /// continuation - that needs the DAG refactor.
-    pub install_fallback_path: Option<String>,
-    /// ctl.iterate: when set, the executor runs the referenced
-    /// pipeline N times. ${ITER_INDEX} in the sub-pipeline file
-    /// gets substituted to the iteration number (0..N-1). Side-effect
-    /// model - sub-pipeline output isn't composed into the parent.
-    pub iterate_pipeline_path: Option<String>,
-    pub iterate_count: Option<u64>,
-    /// ctl.foreach: when set, the executor reads upstream rows and
-    /// runs the referenced pipeline once per row. ${ITER_INDEX} is
-    /// the row index; ${ITER_ITEM_<FIELD>} (uppercased) is the row's
-    /// value for each top-level field. Side-effect model.
-    pub foreach_pipeline_path: Option<String>,
-    /// HTTP per-row sink (snk.webhook / snk.rest). When set, the
-    /// executor materializes the upstream view and dispatches requests
-    /// via ureq; stage SQL is empty (no DuckDB write).
-    pub webhook: Option<WebhookSpec>,
-    /// Snowflake SQL API sink. When set, the executor builds multi-row
-    /// INSERT statements and POSTs them in batches to the configured
-    /// account; stage SQL is empty.
-    pub snowflake_sink: Option<SnowflakeSinkSpec>,
-    /// Databricks SQL Statement Execution API sink. Same pattern as
-    /// Snowflake; stage SQL stays empty.
-    pub databricks_sink: Option<DatabricksSinkSpec>,
-    /// Snowflake SQL API source. When set, the executor POSTs the
-    /// SELECT, parses the response, writes it as JSON to a temp file,
-    /// then materializes node_id from the file via read_json_auto.
-    pub snowflake_source: Option<SnowflakeSourceSpec>,
-    /// Databricks SQL Statement Execution API source. Same shape.
-    pub databricks_source: Option<DatabricksSourceSpec>,
-    /// Generic HTTP REST source. Fetches a URL (with optional cursor
-    /// pagination), parses the response, and materializes the row
-    /// objects as a DuckDB table.
-    pub rest_source: Option<RestSourceSpec>,
-    /// Elasticsearch / OpenSearch _search source. Paginated via
-    /// from+size; rows come from hits.hits[]._source.
-    pub elastic_source: Option<ElasticSourceSpec>,
-    /// MongoDB insert_many sink (official driver + tokio block_on).
-    pub mongo_sink: Option<MongoSinkSpec>,
-    /// MongoDB find() source (official driver + tokio block_on).
-    pub mongo_source: Option<MongoSourceSpec>,
-    /// ClickHouse HTTP-API sink (POST INSERT INTO ... FORMAT JSONEachRow).
-    pub clickhouse_sink: Option<ClickHouseSinkSpec>,
-    /// ClickHouse HTTP-API source (POST SELECT ... FORMAT JSON).
-    pub clickhouse_source: Option<ClickHouseSourceSpec>,
-    /// SQL Server / Synapse INSERT via tiberius (multi-row VALUES).
-    pub sqlserver_sink: Option<SqlServerSinkSpec>,
-    /// SQL Server / Synapse SELECT via tiberius.
-    pub sqlserver_source: Option<SqlServerSourceSpec>,
-    /// Cassandra / ScyllaDB INSERT via the scylla CQL driver.
-    pub cassandra_sink: Option<CassandraSinkSpec>,
-    /// Cassandra / ScyllaDB SELECT via the scylla CQL driver.
-    pub cassandra_source: Option<CassandraSourceSpec>,
-    /// Oracle INSERT (opt-in behind `oracle` feature; spec always
-    /// present so the planner can validate the config either way).
-    pub oracle_sink: Option<OracleSinkSpec>,
-    /// Oracle SELECT (opt-in behind `oracle` feature).
-    pub oracle_source: Option<OracleSourceSpec>,
-    /// ADBC (Arrow Database Connectivity) SELECT: loads a prebuilt ADBC
-    /// driver at runtime and materializes its Arrow result via Parquet.
-    pub adbc_source: Option<AdbcSourceSpec>,
-    /// Single-consumer network-DB ATTACH source materialized as a temp parquet
-    /// + read_parquet VIEW instead of an on-disk table (faster, with pushdown).
-    pub attach_parquet_source: Option<AttachParquetSourceSpec>,
-    /// Redis SET batch via the redis sync client.
-    pub redis_sink: Option<RedisSinkSpec>,
-    /// Redis SCAN + GET via the redis sync client.
-    pub redis_source: Option<RedisSourceSpec>,
-    /// Qdrant points scroll source (paginates /collections/{id}/points/scroll).
-    pub qdrant_source: Option<QdrantSourceSpec>,
-    /// Weaviate object list source (paginates /v1/objects?class=&after=).
-    pub weaviate_source: Option<WeaviateSourceSpec>,
-    /// Milvus vector query source (paginates /v1/vector/query via offset).
-    pub milvus_source: Option<MilvusSourceSpec>,
-    /// YAML / TOML config-format reader: parse the file with the relevant
-    /// serde crate, then materialize the rows via the shared json-table
-    /// helper. One spec, two formats picked by the FormatKind field.
-    pub format_source: Option<FormatFileSourceSpec>,
-    /// YAML / TOML config-format writer: SELECT the upstream view, serialize
-    /// the row array with the relevant serde crate, write to disk.
-    pub format_sink: Option<FormatFileSinkSpec>,
-    /// Kafka producer (also handles Redpanda - same wire protocol).
-    pub kafka_sink: Option<KafkaSinkSpec>,
-    /// Kafka consumer (also handles Redpanda).
-    pub kafka_source: Option<KafkaSourceSpec>,
-    /// Apache Avro container-file reader (pure-Rust apache-avro crate).
-    pub avro_source: Option<AvroSourceSpec>,
-    /// NATS / JetStream publisher.
-    pub nats_sink: Option<NatsSinkSpec>,
-    /// NATS / JetStream subscriber-with-timeout (batch collector).
-    pub nats_source: Option<NatsSourceSpec>,
-    /// GCP Pub/Sub publish via REST.
-    pub pubsub_sink: Option<PubSubSinkSpec>,
-    /// GCP Pub/Sub pull via REST.
-    pub pubsub_source: Option<PubSubSourceSpec>,
-    /// XML row-path reader (walks path -> JSON object per match).
-    pub xml_source: Option<XmlSourceSpec>,
-    /// XML wrapper-element writer (root/row shape).
-    pub xml_sink: Option<XmlSinkSpec>,
-    /// Avro container-file writer (schema inferred from first row).
-    pub avro_sink: Option<AvroSinkSpec>,
-    /// RabbitMQ / AMQP 0.9.1 publisher.
-    pub rabbit_sink: Option<RabbitSinkSpec>,
-    /// RabbitMQ / AMQP 0.9.1 batch consumer.
-    pub rabbit_source: Option<RabbitSourceSpec>,
-    /// Local git repo reader (shells out to system `git`).
-    pub git_source: Option<GitSourceSpec>,
-    /// Shell-exec stage (one-shot std::process::Command).
-    pub shell: Option<ShellSpec>,
-    /// FTP / FTPS file downloader.
-    pub ftp_source: Option<FtpSourceSpec>,
-    /// System clipboard reader.
-    pub clipboard_source: Option<ClipboardSourceSpec>,
-    /// IMAP mailbox reader.
-    pub email_source: Option<EmailSourceSpec>,
-    /// SMTP per-row sender.
-    pub email_sink: Option<EmailSinkSpec>,
-    /// Local webhook listener (binds a TCP port, collects N requests).
-    pub webhook_source: Option<WebhookSourceSpec>,
-    /// DynamoDB Scan via direct HTTP + SigV4 (no AWS SDK).
-    pub dynamodb_source: Option<DynamoDbSourceSpec>,
-    /// Kinesis single-shard read via direct HTTP + SigV4.
-    pub kinesis_source: Option<KinesisSourceSpec>,
-    /// xf.ai.embed (per-row embedding).
-    pub ai_embed: Option<AiEmbedSpec>,
-    /// code.wasm (per-row WebAssembly transform).
-    pub wasm: Option<WasmSpec>,
-    /// code.javascript (per-row JS transform via boa interpreter).
-    pub javascript: Option<JavaScriptSpec>,
-    /// xf.ai.chunk (text splitter for RAG).
-    pub ai_chunk: Option<AiChunkSpec>,
-    /// xf.ai.pii (regex-based PII redaction).
-    pub ai_pii: Option<AiPiiSpec>,
-    /// xf.ai.llm (per-row chat completion).
-    pub ai_llm: Option<AiLlmSpec>,
-    /// xf.ai.classify (LLM-backed classification).
-    pub ai_classify: Option<AiClassifySpec>,
-    /// xf.ai.dedupe (embedding-based semantic dedupe).
-    pub ai_dedupe: Option<AiDedupeSpec>,
+    /// Single runtime action this stage performs beyond plain DuckDB SQL:
+    /// a driver source/sink, an HTTP/AI/code transform, or a control-flow
+    /// side effect. None means the stage is pure SQL. Replacing the former
+    /// ~61 Option<Spec> fields with one enum makes impossible states
+    /// unrepresentable and keeps is_pure_sql from silently drifting.
+    pub runtime: Option<RuntimeSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -222,68 +65,78 @@ impl Stage {
     /// driver-based source or sink should add itself here so it forces
     /// the per-stage path.
     pub fn is_pure_sql(&self) -> bool {
-        self.upsert.is_none()
-            && self.text_search.is_none()
-            && self.run_pipeline_path.is_none()
-            && self.install_fallback_path.is_none()
-            && self.iterate_pipeline_path.is_none()
-            && self.foreach_pipeline_path.is_none()
-            && self.webhook.is_none()
-            && self.snowflake_sink.is_none()
-            && self.databricks_sink.is_none()
-            && self.snowflake_source.is_none()
-            && self.databricks_source.is_none()
-            && self.rest_source.is_none()
-            && self.elastic_source.is_none()
-            && self.mongo_sink.is_none()
-            && self.mongo_source.is_none()
-            && self.clickhouse_sink.is_none()
-            && self.clickhouse_source.is_none()
-            && self.sqlserver_sink.is_none()
-            && self.sqlserver_source.is_none()
-            && self.cassandra_sink.is_none()
-            && self.cassandra_source.is_none()
-            && self.oracle_sink.is_none()
-            && self.oracle_source.is_none()
-            && self.adbc_source.is_none()
-            && self.attach_parquet_source.is_none()
-            && self.redis_sink.is_none()
-            && self.redis_source.is_none()
-            && self.qdrant_source.is_none()
-            && self.weaviate_source.is_none()
-            && self.milvus_source.is_none()
-            && self.format_source.is_none()
-            && self.format_sink.is_none()
-            && self.kafka_sink.is_none()
-            && self.kafka_source.is_none()
-            && self.avro_source.is_none()
-            && self.nats_sink.is_none()
-            && self.nats_source.is_none()
-            && self.pubsub_sink.is_none()
-            && self.pubsub_source.is_none()
-            && self.xml_source.is_none()
-            && self.xml_sink.is_none()
-            && self.avro_sink.is_none()
-            && self.rabbit_sink.is_none()
-            && self.rabbit_source.is_none()
-            && self.git_source.is_none()
-            && self.shell.is_none()
-            && self.ftp_source.is_none()
-            && self.clipboard_source.is_none()
-            && self.email_source.is_none()
-            && self.email_sink.is_none()
-            && self.webhook_source.is_none()
-            && self.dynamodb_source.is_none()
-            && self.kinesis_source.is_none()
-            && self.ai_embed.is_none()
-            && self.wasm.is_none()
-            && self.javascript.is_none()
-            && self.ai_chunk.is_none()
-            && self.ai_pii.is_none()
-            && self.ai_llm.is_none()
-            && self.ai_classify.is_none()
-            && self.ai_dedupe.is_none()
+        self.runtime.is_none()
     }
+}
+
+/// The single non-SQL action a Stage performs (or None for pure SQL).
+/// Terminal variants (sources / sinks / transforms) replace the stage's
+/// SQL run in the executor; control-flow variants (RunPipeline / Iterate /
+/// Foreach / InstallFallback) run as a side effect and then fall through to
+/// the stage's pass-through SQL.
+#[derive(Debug)]
+pub enum RuntimeSpec {
+    Upsert(UpsertSpec),
+    TextSearch(TextSearchSpec),
+    RunPipeline(String),
+    InstallFallback(String),
+    Iterate { path: String, count: u64 },
+    Foreach(String),
+    Webhook(WebhookSpec),
+    SnowflakeSink(SnowflakeSinkSpec),
+    DatabricksSink(DatabricksSinkSpec),
+    SnowflakeSource(SnowflakeSourceSpec),
+    DatabricksSource(DatabricksSourceSpec),
+    RestSource(RestSourceSpec),
+    ElasticSource(ElasticSourceSpec),
+    MongoSink(MongoSinkSpec),
+    MongoSource(MongoSourceSpec),
+    ClickhouseSink(ClickHouseSinkSpec),
+    ClickhouseSource(ClickHouseSourceSpec),
+    SqlserverSink(SqlServerSinkSpec),
+    SqlserverSource(SqlServerSourceSpec),
+    CassandraSink(CassandraSinkSpec),
+    CassandraSource(CassandraSourceSpec),
+    OracleSink(OracleSinkSpec),
+    OracleSource(OracleSourceSpec),
+    AdbcSource(AdbcSourceSpec),
+    AttachParquetSource(AttachParquetSourceSpec),
+    RedisSink(RedisSinkSpec),
+    RedisSource(RedisSourceSpec),
+    QdrantSource(QdrantSourceSpec),
+    WeaviateSource(WeaviateSourceSpec),
+    MilvusSource(MilvusSourceSpec),
+    FormatSource(FormatFileSourceSpec),
+    FormatSink(FormatFileSinkSpec),
+    KafkaSink(KafkaSinkSpec),
+    KafkaSource(KafkaSourceSpec),
+    AvroSource(AvroSourceSpec),
+    NatsSink(NatsSinkSpec),
+    NatsSource(NatsSourceSpec),
+    PubsubSink(PubSubSinkSpec),
+    PubsubSource(PubSubSourceSpec),
+    XmlSource(XmlSourceSpec),
+    XmlSink(XmlSinkSpec),
+    AvroSink(AvroSinkSpec),
+    RabbitSink(RabbitSinkSpec),
+    RabbitSource(RabbitSourceSpec),
+    GitSource(GitSourceSpec),
+    Shell(ShellSpec),
+    FtpSource(FtpSourceSpec),
+    ClipboardSource(ClipboardSourceSpec),
+    EmailSource(EmailSourceSpec),
+    EmailSink(EmailSinkSpec),
+    WebhookSource(WebhookSourceSpec),
+    DynamodbSource(DynamoDbSourceSpec),
+    KinesisSource(KinesisSourceSpec),
+    AiEmbed(AiEmbedSpec),
+    Wasm(WasmSpec),
+    Javascript(JavaScriptSpec),
+    AiChunk(AiChunkSpec),
+    AiPii(AiPiiSpec),
+    AiLlm(AiLlmSpec),
+    AiClassify(AiClassifySpec),
+    AiDedupe(AiDedupeSpec),
 }
 
 #[derive(Debug, Clone)]
@@ -4313,6 +4166,72 @@ fn build_stage(
         }
         (sql, StageKind::View, None)
     };
+    // Collapse the at-most-one set runtime spec into a single enum. Each
+    // component sets exactly one of these, so the .or_else order is irrelevant.
+    let runtime: Option<RuntimeSpec> = None
+        .or_else(|| upsert.map(RuntimeSpec::Upsert))
+        .or_else(|| text_search.map(RuntimeSpec::TextSearch))
+        .or_else(|| run_pipeline_path.map(RuntimeSpec::RunPipeline))
+        .or_else(|| install_fallback_path.map(RuntimeSpec::InstallFallback))
+        .or_else(|| iterate_pipeline_path
+            .map(|path| RuntimeSpec::Iterate { path, count: iterate_count.unwrap_or(0) }))
+        .or_else(|| foreach_pipeline_path.map(RuntimeSpec::Foreach))
+        .or_else(|| webhook.map(RuntimeSpec::Webhook))
+        .or_else(|| snowflake_sink.map(RuntimeSpec::SnowflakeSink))
+        .or_else(|| databricks_sink.map(RuntimeSpec::DatabricksSink))
+        .or_else(|| snowflake_source.map(RuntimeSpec::SnowflakeSource))
+        .or_else(|| databricks_source.map(RuntimeSpec::DatabricksSource))
+        .or_else(|| rest_source.map(RuntimeSpec::RestSource))
+        .or_else(|| elastic_source.map(RuntimeSpec::ElasticSource))
+        .or_else(|| mongo_sink.map(RuntimeSpec::MongoSink))
+        .or_else(|| mongo_source.map(RuntimeSpec::MongoSource))
+        .or_else(|| clickhouse_sink.map(RuntimeSpec::ClickhouseSink))
+        .or_else(|| clickhouse_source.map(RuntimeSpec::ClickhouseSource))
+        .or_else(|| sqlserver_sink.map(RuntimeSpec::SqlserverSink))
+        .or_else(|| sqlserver_source.map(RuntimeSpec::SqlserverSource))
+        .or_else(|| cassandra_sink.map(RuntimeSpec::CassandraSink))
+        .or_else(|| cassandra_source.map(RuntimeSpec::CassandraSource))
+        .or_else(|| oracle_sink.map(RuntimeSpec::OracleSink))
+        .or_else(|| oracle_source.map(RuntimeSpec::OracleSource))
+        .or_else(|| adbc_source.map(RuntimeSpec::AdbcSource))
+        .or_else(|| attach_parquet_source.map(RuntimeSpec::AttachParquetSource))
+        .or_else(|| redis_sink.map(RuntimeSpec::RedisSink))
+        .or_else(|| redis_source.map(RuntimeSpec::RedisSource))
+        .or_else(|| qdrant_source.map(RuntimeSpec::QdrantSource))
+        .or_else(|| weaviate_source.map(RuntimeSpec::WeaviateSource))
+        .or_else(|| milvus_source.map(RuntimeSpec::MilvusSource))
+        .or_else(|| format_source.map(RuntimeSpec::FormatSource))
+        .or_else(|| format_sink.map(RuntimeSpec::FormatSink))
+        .or_else(|| kafka_sink.map(RuntimeSpec::KafkaSink))
+        .or_else(|| kafka_source.map(RuntimeSpec::KafkaSource))
+        .or_else(|| avro_source.map(RuntimeSpec::AvroSource))
+        .or_else(|| nats_sink.map(RuntimeSpec::NatsSink))
+        .or_else(|| nats_source.map(RuntimeSpec::NatsSource))
+        .or_else(|| pubsub_sink.map(RuntimeSpec::PubsubSink))
+        .or_else(|| pubsub_source.map(RuntimeSpec::PubsubSource))
+        .or_else(|| xml_source.map(RuntimeSpec::XmlSource))
+        .or_else(|| xml_sink.map(RuntimeSpec::XmlSink))
+        .or_else(|| avro_sink.map(RuntimeSpec::AvroSink))
+        .or_else(|| rabbit_sink.map(RuntimeSpec::RabbitSink))
+        .or_else(|| rabbit_source.map(RuntimeSpec::RabbitSource))
+        .or_else(|| git_source.map(RuntimeSpec::GitSource))
+        .or_else(|| shell.map(RuntimeSpec::Shell))
+        .or_else(|| ftp_source.map(RuntimeSpec::FtpSource))
+        .or_else(|| clipboard_source.map(RuntimeSpec::ClipboardSource))
+        .or_else(|| email_source.map(RuntimeSpec::EmailSource))
+        .or_else(|| email_sink.map(RuntimeSpec::EmailSink))
+        .or_else(|| webhook_source.map(RuntimeSpec::WebhookSource))
+        .or_else(|| dynamodb_source.map(RuntimeSpec::DynamodbSource))
+        .or_else(|| kinesis_source.map(RuntimeSpec::KinesisSource))
+        .or_else(|| ai_embed.map(RuntimeSpec::AiEmbed))
+        .or_else(|| wasm.map(RuntimeSpec::Wasm))
+        .or_else(|| javascript.map(RuntimeSpec::Javascript))
+        .or_else(|| ai_chunk.map(RuntimeSpec::AiChunk))
+        .or_else(|| ai_pii.map(RuntimeSpec::AiPii))
+        .or_else(|| ai_llm.map(RuntimeSpec::AiLlm))
+        .or_else(|| ai_classify.map(RuntimeSpec::AiClassify))
+        .or_else(|| ai_dedupe.map(RuntimeSpec::AiDedupe))
+        ;
     Ok(Stage {
         node_id: node.id.clone(),
         component_id: component_id.to_string(),
@@ -4322,68 +4241,7 @@ fn build_stage(
         from,
         sink_path,
         sink_mode,
-        upsert,
-        text_search,
-        run_pipeline_path,
-        install_fallback_path,
-        iterate_pipeline_path,
-        iterate_count,
-        foreach_pipeline_path,
-        webhook,
-        snowflake_sink,
-        databricks_sink,
-        snowflake_source,
-        databricks_source,
-        rest_source,
-        elastic_source,
-        mongo_sink,
-        mongo_source,
-        clickhouse_sink,
-        clickhouse_source,
-        sqlserver_sink,
-        sqlserver_source,
-        cassandra_sink,
-        cassandra_source,
-        oracle_sink,
-        oracle_source,
-        adbc_source,
-        attach_parquet_source,
-        redis_sink,
-        redis_source,
-        qdrant_source,
-        weaviate_source,
-        milvus_source,
-        format_source,
-        format_sink,
-        kafka_sink,
-        kafka_source,
-        avro_source,
-        nats_sink,
-        nats_source,
-        pubsub_sink,
-        pubsub_source,
-        xml_source,
-        xml_sink,
-        avro_sink,
-        rabbit_sink,
-        rabbit_source,
-        git_source,
-        shell,
-        ftp_source,
-        clipboard_source,
-        ai_embed,
-        wasm,
-        javascript,
-        ai_chunk,
-        ai_pii,
-        ai_llm,
-        ai_classify,
-        ai_dedupe,
-        email_source,
-        email_sink,
-        webhook_source,
-        dynamodb_source,
-        kinesis_source,
+        runtime,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,
@@ -11024,11 +10882,10 @@ mod tests {
         // so the ATTACH + secret live on the spec; concatenate spec.attach +
         // body to assert the same logic regardless of where it lands.
         let stage = &compiled.stages[0];
-        let src_sql = stage
-            .attach_parquet_source
-            .as_ref()
-            .map(|s| format!("{}{}", s.attach, s.body))
-            .unwrap_or_else(|| stage.sql.clone());
+        let src_sql = match stage.runtime.as_ref() {
+            Some(RuntimeSpec::AttachParquetSource(s)) => format!("{}{}", s.attach, s.body),
+            _ => stage.sql.clone(),
+        };
         assert!(
             src_sql.contains("CREATE OR REPLACE SECRET duckle_quack_secret"),
             "missing SECRET creation: {}",
@@ -11072,11 +10929,10 @@ mod tests {
         );
         let compiled = compile(&p).unwrap();
         let stage = &compiled.stages[0];
-        let src_sql = stage
-            .attach_parquet_source
-            .as_ref()
-            .map(|s| format!("{}{}", s.attach, s.body))
-            .unwrap_or_else(|| stage.sql.clone());
+        let src_sql = match stage.runtime.as_ref() {
+            Some(RuntimeSpec::AttachParquetSource(s)) => format!("{}{}", s.attach, s.body),
+            _ => stage.sql.clone(),
+        };
         assert!(
             !src_sql.contains("CREATE OR REPLACE SECRET"),
             "should not emit empty SECRET: {}",
