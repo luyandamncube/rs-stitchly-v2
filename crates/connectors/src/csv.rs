@@ -9,10 +9,15 @@ use duckle_metadata::{Column, DataType};
 use duckle_plugin_sdk::{Connector, ConnectorKind, Inspection, InspectError, SchemaInspector};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value as JsonValue};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
 
 const DEFAULT_SAMPLE_ROWS: usize = 200;
+
+/// Cap the bytes read during inspection so a multi-GB CSV is not fully loaded
+/// into memory just to sample the first rows.
+const MAX_INSPECT_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CsvOptions {
@@ -92,51 +97,42 @@ fn inspect_csv(opts: CsvOptions) -> Result<Inspection, InspectError> {
     }
 
     // Decode the file body up front via encoding_rs so we can support
-    // utf-16 / latin-1 / windows-1252 in addition to utf-8.
+    // utf-16 / latin-1 / windows-1252 in addition to utf-8. Inspection only
+    // needs the header plus a sample, so cap the read to avoid loading a
+    // multi-GB file into memory just to look at the first few rows.
     let mut raw = Vec::new();
     {
-        let mut file = BufReader::new(File::open(&path)?);
-        file.read_to_end(&mut raw)?;
+        let file = File::open(&path)?;
+        BufReader::new(file)
+            .take(MAX_INSPECT_BYTES)
+            .read_to_end(&mut raw)?;
     }
+    let truncated = raw.len() as u64 == MAX_INSPECT_BYTES;
     let encoding = encoding_rs::Encoding::for_label(opts.encoding.as_bytes())
         .ok_or_else(|| InspectError::Config(format!("Unknown encoding {}", opts.encoding)))?;
-    let (decoded, _, had_errors) = encoding.decode(&raw);
-    if had_errors {
-        // Don't fail - most files have stray bytes. Surface as a parse warning later.
-    }
-    let text = decoded.into_owned();
-
-    // Skip leading lines per the user's preference. We just drop the
-    // first N lines of the decoded text.
-    let body = if opts.skip_lines > 0 {
-        let mut lines = text.lines();
-        for _ in 0..opts.skip_lines {
-            if lines.next().is_none() {
-                break;
-            }
+    // encoding_rs substitutes U+FFFD for malformed bytes rather than failing,
+    // which is fine for inspection - the had_errors flag is intentionally
+    // ignored.
+    let (decoded, _, _had_errors) = encoding.decode(&raw);
+    let mut text = decoded.into_owned();
+    // If we hit the byte cap the final line is probably partial - drop it so
+    // we never infer from or preview a truncated record.
+    if truncated {
+        if let Some(nl) = text.rfind('\n') {
+            text.truncate(nl);
         }
-        lines.collect::<Vec<_>>().join("\n")
-    } else {
-        text
-    };
+    }
 
-    let delim = opts.delimiter.as_bytes().first().copied().unwrap_or(b',');
-    let quote = opts
-        .quote_char
-        .as_bytes()
-        .first()
-        .copied()
-        .unwrap_or(b'"');
+    // Skip leading lines by slicing past the first N newlines - no per-line
+    // allocation.
+    let body = skip_lines_slice(&text, opts.skip_lines);
 
-    let mut builder = csv::ReaderBuilder::new();
-    builder
-        .has_headers(opts.has_header)
-        .delimiter(delim)
-        .quote(quote)
-        .flexible(true);
-    let mut reader = builder.from_reader(body.as_bytes());
+    let delim = parse_single_byte_option(&opts.delimiter, "delimiter")?;
+    let quote = parse_quote_option(&opts.quote_char)?;
 
-    let headers: Vec<String> = if opts.has_header {
+    let mut reader = reader_builder(opts.has_header, delim, quote).from_reader(body.as_bytes());
+
+    let raw_headers: Vec<String> = if opts.has_header {
         reader
             .headers()
             .map_err(|e| InspectError::Parse(format!("Header parse: {}", e)))?
@@ -144,29 +140,20 @@ fn inspect_csv(opts: CsvOptions) -> Result<Inspection, InspectError> {
             .map(String::from)
             .collect()
     } else {
-        // For headerless files, peek the first row to determine width.
-        let mut iter = reader.records();
-        let first = iter
+        // For headerless files, peek the first row to determine width, then
+        // rebuild the reader so that first row is still read as a sample.
+        let width = reader
+            .records()
             .next()
             .ok_or_else(|| InspectError::Parse("Empty file".into()))?
-            .map_err(|e| InspectError::Parse(format!("Row parse: {}", e)))?;
-        let width = first.len();
-        // We still need to use that first row as a sample below, so
-        // rebuild the reader.
-        let mut headers = (0..width).map(|i| format!("col_{}", i + 1)).collect::<Vec<_>>();
-        // Rewind by rebuilding the reader.
-        let mut rebuilder = csv::ReaderBuilder::new();
-        rebuilder
-            .has_headers(false)
-            .delimiter(delim)
-            .quote(quote)
-            .flexible(true);
-        reader = rebuilder.from_reader(body.as_bytes());
-        // Pop the dummy reference to silence unused warnings while still
-        // emitting the names.
-        headers.shrink_to_fit();
-        headers
+            .map_err(|e| InspectError::Parse(format!("Row parse: {}", e)))?
+            .len();
+        reader = reader_builder(false, delim, quote).from_reader(body.as_bytes());
+        (0..width).map(|i| format!("col_{}", i + 1)).collect()
     };
+    // Empty or duplicate header names lose preview data and confuse downstream
+    // column references; normalise them to unique, non-empty names.
+    let headers = sanitize_headers(raw_headers);
 
     let null_sentinel = opts.null_value.clone();
     let mut samples: Vec<csv::StringRecord> = Vec::with_capacity(opts.sample_rows);
@@ -242,6 +229,7 @@ fn infer_column_type(
     let mut all_int = true;
     let mut all_float = true;
     let mut all_bool = true;
+    let mut saw_named_bool = false;
     let mut all_date = true;
     let mut all_timestamp = true;
 
@@ -258,18 +246,15 @@ fn infer_column_type(
         if all_int && v.parse::<i64>().is_err() {
             all_int = false;
         }
-        if all_float
-            && (v.parse::<f64>().is_err() || v.is_empty())
-        {
+        if all_float && parse_finite_f64(v).is_none() {
             all_float = false;
         }
-        if all_bool
-            && !matches!(
-                v.to_ascii_lowercase().as_str(),
-                "true" | "false" | "0" | "1" | "yes" | "no"
-            )
-        {
-            all_bool = false;
+        if all_bool {
+            match v.to_ascii_lowercase().as_str() {
+                "true" | "false" | "yes" | "no" => saw_named_bool = true,
+                "0" | "1" => {}
+                _ => all_bool = false,
+            }
         }
         if all_date && !is_date_like(v) {
             all_date = false;
@@ -282,8 +267,10 @@ fn infer_column_type(
     if !has_value {
         return DataType::String;
     }
-    // Order matters: timestamp is more specific than date; bool is more
-    // specific than int (since "0" / "1" parse as both).
+    // Order matters: timestamp before date (more specific). For numbers Int64
+    // wins over Bool for ambiguous "0"/"1" columns - a column is only Bool when
+    // at least one explicit true/false/yes/no token appears, otherwise binary
+    // numeric flags would be mis-typed as booleans.
     if all_timestamp {
         return DataType::Timestamp;
     }
@@ -296,7 +283,7 @@ fn infer_column_type(
     if all_float {
         return DataType::Float64;
     }
-    if all_bool {
+    if all_bool && saw_named_bool {
         return DataType::Bool;
     }
     DataType::String
@@ -350,7 +337,7 @@ fn build_preview_row(
         let trimmed = raw.trim();
         let parsed = match columns.get(i).map(|c| c.data_type) {
             Some(DataType::Int64) => trimmed.parse::<i64>().map(JsonValue::from).ok(),
-            Some(DataType::Float64) => trimmed.parse::<f64>().map(JsonValue::from).ok(),
+            Some(DataType::Float64) => parse_finite_f64(trimmed).map(JsonValue::from),
             Some(DataType::Bool) => match trimmed.to_ascii_lowercase().as_str() {
                 "true" | "1" | "yes" => Some(json!(true)),
                 "false" | "0" | "no" => Some(json!(false)),
@@ -361,6 +348,97 @@ fn build_preview_row(
         map.insert(name.clone(), parsed.unwrap_or_else(|| JsonValue::String(trimmed.to_string())));
     }
     JsonValue::Object(map)
+}
+
+/// Parse a single-byte CSV option (delimiter / quote char). Accepts the
+/// literal escape "\t" for tab. Fails loudly on empty or multi-byte input
+/// rather than silently using the first byte.
+fn parse_single_byte_option(value: &str, name: &str) -> Result<u8, InspectError> {
+    if value == "\\t" {
+        return Ok(b'\t');
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() != 1 {
+        return Err(InspectError::Config(format!(
+            "{} must be a single byte, got {:?}",
+            name, value
+        )));
+    }
+    Ok(bytes[0])
+}
+
+/// Parse the quote-char option. An empty value means "no quoting" (the UI's
+/// "None" choice); anything else must be a single byte.
+fn parse_quote_option(value: &str) -> Result<Option<u8>, InspectError> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    parse_single_byte_option(value, "quoteChar").map(Some)
+}
+
+fn reader_builder(has_headers: bool, delim: u8, quote: Option<u8>) -> csv::ReaderBuilder {
+    let mut builder = csv::ReaderBuilder::new();
+    builder
+        .has_headers(has_headers)
+        .delimiter(delim)
+        .flexible(true);
+    match quote {
+        Some(q) => {
+            builder.quote(q);
+        }
+        // An empty quote char ("None" in the UI) disables quote processing.
+        None => {
+            builder.quoting(false);
+        }
+    }
+    builder
+}
+
+/// Return the slice of `text` after the first `lines_to_skip` newlines without
+/// allocating a new String.
+fn skip_lines_slice(text: &str, lines_to_skip: usize) -> &str {
+    if lines_to_skip == 0 {
+        return text;
+    }
+    let mut skipped = 0;
+    for (idx, ch) in text.char_indices() {
+        if ch == '\n' {
+            skipped += 1;
+            if skipped == lines_to_skip {
+                return &text[idx + 1..];
+            }
+        }
+    }
+    ""
+}
+
+/// Replace empty header names with col_N and disambiguate duplicates with a
+/// numeric suffix so preview rows never collide and downstream column
+/// references stay unambiguous.
+fn sanitize_headers(headers: Vec<String>) -> Vec<String> {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(headers.len());
+    for (i, h) in headers.into_iter().enumerate() {
+        let base = if h.trim().is_empty() {
+            format!("col_{}", i + 1)
+        } else {
+            h
+        };
+        let count = seen.entry(base.clone()).or_insert(0);
+        *count += 1;
+        if *count == 1 {
+            out.push(base);
+        } else {
+            out.push(format!("{}_{}", base, count));
+        }
+    }
+    out
+}
+
+/// Parse a float, rejecting non-finite values (NaN / inf) which JSON cannot
+/// represent and which should not classify a column as Float64.
+fn parse_finite_f64(s: &str) -> Option<f64> {
+    s.parse::<f64>().ok().filter(|n| n.is_finite())
 }
 
 #[cfg(test)]
@@ -418,5 +496,125 @@ mod tests {
         let cfg = serde_json::json!({ "path": "/nonexistent/path/orders.csv" });
         let err = CsvConnector.inspect(cfg).await.unwrap_err();
         assert!(matches!(err, InspectError::Config(_)));
+    }
+
+    #[tokio::test]
+    async fn headerless_csv_synthesizes_names() {
+        let f = write_csv("1,alice,10.5\n2,bob,20.0\n");
+        let cfg = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "hasHeader": false,
+        });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        let names: Vec<_> = inspection.schema.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["col_1", "col_2", "col_3"]);
+        assert_eq!(inspection.schema[0].data_type, DataType::Int64);
+        assert_eq!(inspection.schema[1].data_type, DataType::String);
+        assert_eq!(inspection.schema[2].data_type, DataType::Float64);
+        // The first row must still be sampled (not consumed as a header).
+        assert_eq!(inspection.sample_rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn custom_delimiter() {
+        let f = write_csv("id;name\n1;alice\n2;bob\n");
+        let cfg = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "delimiter": ";",
+        });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        assert_eq!(inspection.schema.len(), 2);
+        assert_eq!(inspection.schema[0].name, "id");
+        assert_eq!(inspection.schema[1].name, "name");
+    }
+
+    #[tokio::test]
+    async fn tab_delimiter_literal_escape() {
+        let f = write_csv("id\tname\n1\talice\n2\tbob\n");
+        let cfg = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "delimiter": "\\t",
+        });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        assert_eq!(inspection.schema.len(), 2);
+        assert_eq!(inspection.schema[0].name, "id");
+        assert_eq!(inspection.schema[0].data_type, DataType::Int64);
+    }
+
+    #[tokio::test]
+    async fn skip_lines_drops_preamble() {
+        let f = write_csv("# generated report\n# 2026-05-30\nid,name\n1,alice\n2,bob\n");
+        let cfg = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "skipLines": 2,
+        });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        let names: Vec<_> = inspection.schema.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "name"]);
+    }
+
+    #[tokio::test]
+    async fn duplicate_headers_disambiguated() {
+        let f = write_csv("a,a,b\n1,2,3\n");
+        let cfg = serde_json::json!({ "path": f.path().to_str().unwrap() });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        let names: Vec<_> = inspection.schema.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["a", "a_2", "b"]);
+        // Preview keeps all three values rather than the later "a" overwriting.
+        let row = &inspection.sample_rows[0];
+        assert_eq!(row["a"], serde_json::json!(1));
+        assert_eq!(row["a_2"], serde_json::json!(2));
+        assert_eq!(row["b"], serde_json::json!(3));
+    }
+
+    #[tokio::test]
+    async fn empty_header_names_filled() {
+        let f = write_csv("id,,amount\n1,x,9\n");
+        let cfg = serde_json::json!({ "path": f.path().to_str().unwrap() });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        let names: Vec<_> = inspection.schema.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["id", "col_2", "amount"]);
+    }
+
+    #[tokio::test]
+    async fn invalid_delimiter_errors() {
+        let f = write_csv("a;;b\n1;;2\n");
+        let cfg = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "delimiter": ";;",
+        });
+        let err = CsvConnector.inspect(cfg).await.unwrap_err();
+        assert!(matches!(err, InspectError::Config(_)));
+    }
+
+    #[tokio::test]
+    async fn bool_vs_int_inference() {
+        let f = write_csv("flag,bin\ntrue,0\nfalse,1\n");
+        let cfg = serde_json::json!({ "path": f.path().to_str().unwrap() });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        // Named booleans -> Bool; ambiguous 0/1 stays numeric.
+        assert_eq!(inspection.schema[0].data_type, DataType::Bool);
+        assert_eq!(inspection.schema[1].data_type, DataType::Int64);
+    }
+
+    #[tokio::test]
+    async fn empty_quote_char_disables_quoting() {
+        // The UI "None" quote option sends an empty string; it must not error.
+        let f = write_csv("id,name\n1,alice\n");
+        let cfg = serde_json::json!({
+            "path": f.path().to_str().unwrap(),
+            "quoteChar": "",
+        });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        assert_eq!(inspection.schema.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn non_finite_floats_not_float64() {
+        let f = write_csv("x\n1.5\nNaN\n");
+        let cfg = serde_json::json!({ "path": f.path().to_str().unwrap() });
+        let inspection = CsvConnector.inspect(cfg).await.unwrap();
+        // A column containing NaN must not be classified as Float64.
+        assert_eq!(inspection.schema[0].data_type, DataType::String);
     }
 }
