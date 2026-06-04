@@ -1806,6 +1806,325 @@ fn snowflake_upsert_merges_and_inserts() {
     assert_upsert_result(&out);
 }
 
+// Shared delete-propagation assertion: after seeding (1,alice)(2,bob)(3,carol)
+// and applying an upsert batch that updates id=2 -> BOB, deletes id=3, and
+// inserts id=4 -> dave, the target must hold exactly (1,alice)(2,BOB)(4,dave).
+fn assert_delete_propagation_result(out: &str) {
+    assert_eq!(
+        count(&format!("read_csv_auto('{}')", out)),
+        3,
+        "row count after upsert + delete"
+    );
+    assert_eq!(
+        scalar_string(&format!("SELECT name FROM read_csv_auto('{}') WHERE id = 2", out)),
+        "BOB",
+        "id=2 should be updated to BOB"
+    );
+    assert_eq!(
+        scalar_string(&format!("SELECT name FROM read_csv_auto('{}') WHERE id = 4", out)),
+        "dave",
+        "id=4 should be inserted"
+    );
+    assert_eq!(
+        count(&format!("read_csv_auto('{}') WHERE id = 3", out)),
+        0,
+        "id=3 should be deleted"
+    );
+}
+
+#[test]
+fn duckdb_upsert_with_delete_propagation() {
+    // build_db_sink (DuckDB/SQLite) upsert path: a delete-flag column drives
+    // both the update/insert and the delete. No container needed.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let seed = write_file(tmp.path(), "seed.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let upd = write_file(
+        tmp.path(),
+        "upd.csv",
+        "id,name,op\n2,BOB,update\n3,carol,delete\n4,dave,insert\n",
+    );
+    let dbfile = out_path(tmp.path(), "out.duckdb");
+    let out = out_path(tmp.path(), "out.csv");
+
+    let seed_doc = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": seed, "hasHeader": true })),
+            node("w", "snk.duckdb", json!({
+                "database": dbfile, "tableName": "people", "mode": "overwrite"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    );
+    assert_eq!(engine.execute_pipeline(&seed_doc).status, "ok");
+
+    let upd_doc = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": upd, "hasHeader": true })),
+            node("w", "snk.duckdb", json!({
+                "database": dbfile, "tableName": "people", "mode": "upsert",
+                "conflictColumns": ["id"], "deleteColumn": "op", "deleteValue": "delete"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    );
+    let r2 = engine.execute_pipeline(&upd_doc);
+    assert_eq!(r2.status, "ok", "upsert failed: {:?}", r2.error);
+
+    let read = doc(
+        json!([
+            node("r", "src.duckdb", json!({ "database": dbfile, "tableName": "people" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    );
+    assert_eq!(engine.execute_pipeline(&read).status, "ok");
+    assert_delete_propagation_result(&out);
+}
+
+#[test]
+fn sqlserver_upsert_delete_propagation() {
+    let engine = engine_or_skip!();
+    let (host, port, db, user, pass) = match mssql_env() {
+        Some(x) => x,
+        None => {
+            eprintln!("skipping: set DUCKLE_MSSQL_HOST to run against a real SQL Server");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let seed = write_file(tmp.path(), "seed.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let upd = write_file(
+        tmp.path(),
+        "upd.csv",
+        "id,name,op\n2,BOB,update\n3,carol,delete\n4,dave,insert\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let table = format!("duckle_del_{}", uniq_suffix());
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": seed, "hasHeader": true })),
+            node("w", "snk.sqlserver", json!({
+                "host": &host, "port": port, "database": &db, "user": &user, "password": &pass,
+                "schema": "dbo", "tableName": &table, "mode": "overwrite", "trustCert": true
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r1.status, "ok", "seed failed: {:?}", r1.error);
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": upd, "hasHeader": true })),
+            node("w", "snk.sqlserver", json!({
+                "host": &host, "port": port, "database": &db, "user": &user, "password": &pass,
+                "schema": "dbo", "tableName": &table, "mode": "upsert",
+                "conflictColumns": ["id"], "deleteColumn": "op", "deleteValue": "delete",
+                "trustCert": true
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r2.status, "ok", "upsert+delete failed: {:?}", r2.error);
+    let read = doc(
+        json!([
+            node("r", "src.sqlserver", json!({
+                "host": host, "port": port, "database": db, "user": user, "password": pass,
+                "schema": "dbo", "tableName": table, "mode": "table", "trustCert": true
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    );
+    assert_eq!(engine.execute_pipeline(&read).status, "ok");
+    assert_delete_propagation_result(&out);
+}
+
+#[test]
+fn mysql_upsert_delete_propagation() {
+    // MySQL native upsert (ON DUPLICATE KEY) + delete propagation. The
+    // ON DUPLICATE KEY path needs a PRIMARY KEY on the conflict column, so
+    // the table is altered after the overwrite seed (same as the PG test).
+    let engine = engine_or_skip!();
+    let (host, port, db, user, pass) = match mysql_env() {
+        Some(x) => x,
+        None => {
+            eprintln!("skipping: set DUCKLE_MYSQL_HOST to run against a real MySQL");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let table = format!("duckle_del_{}", uniq_suffix());
+    let seed = write_file(tmp.path(), "seed.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": seed, "hasHeader": true })),
+            node("w", "snk.mysql", json!({
+                "host": &host, "port": port, "database": &db, "user": &user, "password": &pass,
+                "tableName": &table, "mode": "overwrite"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r1.status, "ok", "seed failed: {:?}", r1.error);
+    // Add the primary key so ON DUPLICATE KEY UPDATE has a constraint to fire.
+    let bin = std::env::var("DUCKLE_DUCKDB_BIN").expect("DUCKLE_DUCKDB_BIN set");
+    let alter = std::process::Command::new(&bin)
+        .arg(":memory:")
+        .arg("-c")
+        .arg(format!(
+            "INSTALL mysql; LOAD mysql; \
+             ATTACH 'host={host} port={port} database={db} user={user} password={pass}' AS d (TYPE MYSQL); \
+             CALL mysql_execute('d', 'ALTER TABLE {table} ADD PRIMARY KEY (id);');"
+        ))
+        .output()
+        .expect("alter");
+    assert!(
+        alter.status.success(),
+        "ALTER PK failed: {}",
+        String::from_utf8_lossy(&alter.stderr)
+    );
+    let upd = write_file(
+        tmp.path(),
+        "upd.csv",
+        "id,name,op\n2,BOB,update\n3,carol,delete\n4,dave,insert\n",
+    );
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": upd, "hasHeader": true })),
+            node("w", "snk.mysql", json!({
+                "host": &host, "port": port, "database": &db, "user": &user, "password": &pass,
+                "tableName": &table, "mode": "upsert",
+                "conflictColumns": ["id"], "deleteColumn": "op", "deleteValue": "delete"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r2.status, "ok", "upsert+delete failed: {:?}", r2.error);
+    let out = out_path(tmp.path(), "out.csv");
+    let read = doc(
+        json!([
+            node("r", "src.mysql", json!({
+                "host": host, "port": port, "database": db, "user": user, "password": pass,
+                "tableName": table, "mode": "table"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    );
+    assert_eq!(engine.execute_pipeline(&read).status, "ok");
+    assert_delete_propagation_result(&out);
+}
+
+#[test]
+fn oracle_upsert_delete_propagation() {
+    // Oracle's MERGE deletes via UPDATE SET ... DELETE WHERE; verify the
+    // flag-driven delete + update + insert end to end.
+    let engine = engine_or_skip!();
+    let (connect, user, pass) = match oracle_env() {
+        Some(x) => x,
+        None => {
+            eprintln!("skipping: set DUCKLE_ORACLE_CONNECT to run against a real Oracle");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let seed = write_file(tmp.path(), "seed.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let upd = write_file(
+        tmp.path(),
+        "upd.csv",
+        "id,name,op\n2,BOB,update\n3,carol,delete\n4,dave,insert\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let table = format!("DUCKLE_DEL_{}", uniq_suffix());
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": seed, "hasHeader": true })),
+            node("w", "snk.oracle", json!({
+                "connect": &connect, "user": &user, "password": &pass,
+                "tableName": &table, "mode": "overwrite"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r1.status, "ok", "seed failed: {:?}", r1.error);
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": upd, "hasHeader": true })),
+            node("w", "snk.oracle", json!({
+                "connect": &connect, "user": &user, "password": &pass,
+                "tableName": &table, "mode": "upsert",
+                "conflictColumns": ["id"], "deleteColumn": "op", "deleteValue": "delete"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r2.status, "ok", "upsert+delete failed: {:?}", r2.error);
+    let read = doc(
+        json!([
+            node("r", "src.oracle", json!({
+                "connect": connect, "user": user, "password": pass,
+                "query": format!("SELECT \"id\", \"name\" FROM \"{}\"", table)
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    );
+    assert_eq!(engine.execute_pipeline(&read).status, "ok");
+    assert_delete_propagation_result(&out);
+}
+
+#[test]
+fn snowflake_upsert_delete_propagation() {
+    let engine = engine_or_skip!();
+    let endpoint = match std::env::var("DUCKLE_SNOWFLAKE_ENDPOINT") {
+        Ok(e) if !e.is_empty() => e,
+        _ => {
+            eprintln!("skipping: set DUCKLE_SNOWFLAKE_ENDPOINT to run against a Snowflake-compatible endpoint");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let seed = write_file(tmp.path(), "seed.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let upd = write_file(
+        tmp.path(),
+        "upd.csv",
+        "id,name,op\n2,BOB,update\n3,carol,delete\n4,dave,insert\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let table = format!("DUCKLE_DEL_{}", uniq_suffix());
+    let snk = |path: &str, mode: &str, del: bool| {
+        let mut props = json!({
+            "account": "local", "endpoint": &endpoint, "authType": "pat", "pat": "test",
+            "database": "memory", "schema": "main", "tableName": &table,
+            "mode": mode, "conflictColumns": ["id"]
+        });
+        if del {
+            props["deleteColumn"] = json!("op");
+            props["deleteValue"] = json!("delete");
+        }
+        json!([
+            node("s", "src.csv", json!({ "path": path, "hasHeader": true })),
+            node("w", "snk.snowflake", props),
+        ])
+    };
+    let r1 = engine.execute_pipeline(&doc(snk(&seed, "overwrite", false), json!([main_edge("e", "s", "w")])));
+    assert_eq!(r1.status, "ok", "seed failed: {:?}", r1.error);
+    let r2 = engine.execute_pipeline(&doc(snk(&upd, "upsert", true), json!([main_edge("e", "s", "w")])));
+    assert_eq!(r2.status, "ok", "upsert+delete failed: {:?}", r2.error);
+    let read = doc(
+        json!([
+            node("r", "src.snowflake", json!({
+                "account": "local", "endpoint": endpoint, "authType": "pat", "pat": "test",
+                "query": format!("SELECT \"id\", \"name\" FROM \"memory\".\"main\".\"{}\"", table)
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    );
+    assert_eq!(engine.execute_pipeline(&read).status, "ok");
+    assert_delete_propagation_result(&out);
+}
+
 #[test]
 fn md_source_reads_table() {
     // Live MotherDuck test: requires MOTHERDUCK_TOKEN plus a pre-created

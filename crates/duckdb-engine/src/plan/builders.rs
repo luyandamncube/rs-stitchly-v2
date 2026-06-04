@@ -3305,11 +3305,59 @@ pub(crate) fn build_db_sink(props: &JsonValue, from_view: &str) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "output".into());
     let t = quote_ident(&table);
+    let up = quote_ident(from_view);
+    let mode = string_prop(props, "mode").unwrap_or_else(|| "overwrite".into());
+    let keys = columns_list(props, "conflictColumns");
+
+    // Upsert: set-based DELETE-by-key + re-INSERT (no PRIMARY KEY needed, and
+    // far faster than per-row writes). DuckDB runs the query, so `* EXCLUDE`
+    // and row-value IN work even when the target is an attached SQLite/DuckDB
+    // file. An optional delete-flag column (deleteColumn = deleteValue) marks
+    // rows to remove: their keys are deleted and they are not re-inserted -
+    // this is how DuckLake CDC (change_type='delete') / cdc.diff deletes flow
+    // through to the target.
+    if mode == "upsert" && !keys.is_empty() {
+        let del_col = string_prop(props, "deleteColumn").filter(|s| !s.is_empty());
+        let del_val = string_prop(props, "deleteValue").unwrap_or_else(|| "delete".into());
+        let sel = match &del_col {
+            Some(c) => format!("* EXCLUDE ({})", quote_ident(c)),
+            None => "*".to_string(),
+        };
+        let key_tuple = keys
+            .iter()
+            .map(|k| quote_ident(k))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_filter = match &del_col {
+            Some(c) => format!(
+                " WHERE {} IS DISTINCT FROM '{}'",
+                quote_ident(c),
+                sql_escape(&del_val)
+            ),
+            None => String::new(),
+        };
+        return format!(
+            "CREATE TABLE IF NOT EXISTS duckle_dst.{t} AS SELECT {sel} FROM {up} LIMIT 0; \
+             DELETE FROM duckle_dst.{t} WHERE ({keys}) IN (SELECT {keys} FROM {up}); \
+             INSERT INTO duckle_dst.{t} SELECT {sel} FROM {up}{insert_filter}",
+            t = t,
+            sel = sel,
+            up = up,
+            keys = key_tuple,
+            insert_filter = insert_filter,
+        );
+    }
+    if mode == "append" {
+        return format!(
+            "CREATE TABLE IF NOT EXISTS duckle_dst.{t} AS SELECT * FROM {up} LIMIT 0; \
+             INSERT INTO duckle_dst.{t} SELECT * FROM {up}",
+            t = t,
+            up = up,
+        );
+    }
     format!(
         "DROP TABLE IF EXISTS duckle_dst.{}; CREATE TABLE duckle_dst.{} AS (SELECT * FROM {})",
-        t,
-        t,
-        quote_ident(from_view)
+        t, t, up
     )
 }
 

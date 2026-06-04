@@ -97,6 +97,21 @@ const upsertModeFields = (): Field[] => [
         kind: 'columns',
         description: 'Key columns to match on for Upsert / MERGE. Required when Write mode is Upsert.',
     },
+    {
+        key: 'deleteColumn',
+        label: 'Delete flag column (optional)',
+        kind: 'text',
+        placeholder: '_change_type',
+        description:
+            'Upsert only: rows whose value in this column equals the Delete value are removed from the target by key instead of upserted. Wire a CDC Diff / DuckLake CDC change-type column here to propagate deletes.',
+    },
+    {
+        key: 'deleteValue',
+        label: 'Delete flag value',
+        kind: 'text',
+        defaultValue: 'delete',
+        description: 'The value in the delete flag column that marks a row for deletion (default "delete").',
+    },
 ];
 
 const compressionField = (): Field => ({
@@ -225,7 +240,22 @@ const dbWriteFields = (): Field[] => [
         key: 'conflictColumns',
         label: 'Conflict columns',
         kind: 'columns',
-        description: 'Used in upsert mode: Postgres / Cockroach use these as ON CONFLICT keys; MySQL / MariaDB rely on the target table\'s existing UNIQUE / PRIMARY KEY index.',
+        description: 'Used in upsert mode: Postgres / Cockroach use these as ON CONFLICT keys; MySQL / MariaDB rely on the target table\'s existing UNIQUE / PRIMARY KEY index; DuckDB / SQLite match on these for a set-based delete + re-insert.',
+    },
+    {
+        key: 'deleteColumn',
+        label: 'Delete flag column (optional)',
+        kind: 'text',
+        placeholder: '_change_type',
+        description:
+            'Upsert only: rows whose value in this column equals the Delete value are removed from the target by key instead of upserted. Wire a CDC Diff / DuckLake CDC change-type column here to propagate deletes.',
+    },
+    {
+        key: 'deleteValue',
+        label: 'Delete flag value',
+        kind: 'text',
+        defaultValue: 'delete',
+        description: 'The value in the delete flag column that marks a row for deletion (default "delete").',
     },
 ];
 
@@ -1985,14 +2015,35 @@ function synthNoSqlSink(comp: ComponentDef): ComponentManifest {
                         options: [
                             { label: 'Insert (insert_many)', value: 'insert' },
                             { label: 'Replace collection (drop + insert)', value: 'replace' },
+                            { label: 'Upsert (replace_one on key)', value: 'upsert' },
                         ],
+                    },
+                    {
+                        key: 'conflictColumns',
+                        label: 'Upsert key fields',
+                        kind: 'columns',
+                        description: 'Upsert mode: document fields that form the match filter for replace_one(upsert=true). Required when Write mode is Upsert.',
+                    },
+                    {
+                        key: 'deleteColumn',
+                        label: 'Delete flag field (optional)',
+                        kind: 'text',
+                        placeholder: '_change_type',
+                        description: 'Upsert only: documents whose value in this field equals the Delete value are delete_one\'d by key instead of upserted.',
+                    },
+                    {
+                        key: 'deleteValue',
+                        label: 'Delete flag value',
+                        kind: 'text',
+                        defaultValue: 'delete',
+                        description: 'The value that marks a document for deletion (default "delete").',
                     },
                     {
                         key: 'batchSize',
                         label: 'Batch size',
                         kind: 'integer',
                         defaultValue: 1000,
-                        description: 'Docs per insert_many call.',
+                        description: 'Docs per insert_many call (insert / replace mode).',
                     },
                 ],
             },

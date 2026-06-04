@@ -40,9 +40,19 @@ impl DuckdbEngine {
         }
         let key_set: std::collections::HashSet<&str> =
             spec.conflict_cols.iter().map(|s| s.as_str()).collect();
-        let set_cols: Vec<&String> = all_cols
+        // Delete-propagation control column (if configured) is a control
+        // column: excluded from both the SET clause and the explicit INSERT
+        // column list, but it stays in the staging table so the DELETE filter
+        // and the insert WHERE-guard can read it.
+        let delete_col = spec.delete_column.as_deref();
+        let data_cols: Vec<&String> = all_cols
+            .iter()
+            .filter(|c| Some(c.as_str()) != delete_col)
+            .collect();
+        let set_cols: Vec<&String> = data_cols
             .iter()
             .filter(|c| !key_set.contains(c.as_str()))
+            .copied()
             .collect();
 
         // Sanitized staging table name (suffix from upstream node id).
@@ -79,19 +89,28 @@ impl DuckdbEngine {
 
         // Step 2: assemble the real upsert SQL, run it on the native
         // connection so the constraint check sees the real schema.
-        let native_sql = build_native_upsert_sql(spec, &set_cols, &target_native, &staging_native);
+        let native_stmts =
+            build_native_upsert_sql(spec, &set_cols, &data_cols, &target_native, &staging_native);
         let exec_fn = match spec.family {
             plan::UpsertFamily::Postgres => "postgres_execute",
             plan::UpsertFamily::MySql => "mysql_execute",
         };
-        let exec_sql = format!(
-            "{secret}{attach}CALL {fn_name}('duckle_dst', '{sql}');",
-            secret = secret_prefix,
-            attach = spec.attach,
-            fn_name = exec_fn,
-            sql = native_sql.replace('\'', "''")
-        );
-        self.run(Some(db), &exec_sql, false)
+        // Run each statement as its own passthrough CALL. Postgres returns a
+        // single (multi-statement) string here so this is one call; MySQL
+        // returns its statements separately because its extension rejects a
+        // multi-statement batch ("Commands out of sync").
+        let mut last = String::new();
+        for stmt in &native_stmts {
+            let exec_sql = format!(
+                "{secret}{attach}CALL {fn_name}('duckle_dst', '{sql}');",
+                secret = secret_prefix,
+                attach = spec.attach,
+                fn_name = exec_fn,
+                sql = stmt.replace('\'', "''")
+            );
+            last = self.run(Some(db), &exec_sql, false)?;
+        }
+        Ok(last)
     }
 
     /// HTTP sink (snk.webhook / snk.rest). Materializes the upstream
@@ -237,15 +256,27 @@ impl DuckdbEngine {
             sf_quote_ident(schema_name),
             sf_quote_ident(&spec.table)
         );
-        let cols_list = cols
-            .iter()
-            .map(|c| sf_quote_ident(c))
-            .collect::<Vec<_>>()
-            .join(", ");
         // Upsert (MERGE) clauses when key columns are configured. Each batch is
         // one MERGE whose source is an inline VALUES table - stateless, so it
         // works against the per-request Snowflake SQL API (no temp table).
         let is_upsert = !spec.upsert_keys.is_empty();
+        // Delete-propagation control column (upsert only): excluded from the
+        // target's data columns, kept in the source projection for the
+        // predicate (see the SQL Server sink for the rationale).
+        let delete_col: Option<&str> = if is_upsert {
+            spec.delete_column.as_deref()
+        } else {
+            None
+        };
+        let data_cols: Vec<&String> = cols
+            .iter()
+            .filter(|c| Some(c.as_str()) != delete_col)
+            .collect();
+        let cols_list = data_cols
+            .iter()
+            .map(|c| sf_quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
         let on_clause = spec
             .upsert_keys
             .iter()
@@ -257,17 +288,28 @@ impl DuckdbEngine {
         // Target columns in MERGE ... UPDATE SET are unqualified (Snowflake
         // and the emulator reject a `t.` prefix on the SET target); the source
         // side keeps its `s.` alias.
-        let update_set = cols
+        let update_set = data_cols
             .iter()
             .filter(|c| !sf_key_set.contains(c.as_str()))
             .map(|c| format!("{q} = s.{q}", q = sf_quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        let insert_vals = cols
+        let insert_vals = data_cols
             .iter()
             .map(|c| format!("s.{}", sf_quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
+        let (delete_clause, not_matched_guard) = match delete_col {
+            Some(dc) => {
+                let q = sf_quote_ident(dc);
+                let v = spec.delete_value.replace('\'', "''");
+                (
+                    format!(" WHEN MATCHED AND s.{q} = '{v}' THEN DELETE", q = q, v = v),
+                    format!(" AND (s.{q} IS NULL OR s.{q} <> '{v}')", q = q, v = v),
+                )
+            }
+            None => (String::new(), String::new()),
+        };
         let url = spec.endpoint.clone().unwrap_or_else(|| {
             format!(
                 "https://{}.snowflakecomputing.com/api/v2/statements",
@@ -335,11 +377,11 @@ impl DuckdbEngine {
         // the table already exists.
         let col_types: std::collections::HashMap<String, String> =
             describe_columns(self, db, &spec.from_view).into_iter().collect();
-        let col_defs = cols
+        let col_defs = data_cols
             .iter()
             .map(|c| {
                 let ty = duckdb_type_to_snowflake(
-                    col_types.get(c).map(|s| s.as_str()).unwrap_or("VARCHAR"),
+                    col_types.get(c.as_str()).map(|s| s.as_str()).unwrap_or("VARCHAR"),
                 );
                 format!("{} {}", sf_quote_ident(c), ty)
             })
@@ -394,12 +436,14 @@ impl DuckdbEngine {
                     })
                     .collect();
                 format!(
-                    "MERGE INTO {tgt} t USING ({src}) s ON {on}{matched} WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({ins})",
+                    "MERGE INTO {tgt} t USING ({src}) s ON {on}{del}{matched} WHEN NOT MATCHED{guard} THEN INSERT ({cols}) VALUES ({ins})",
                     tgt = qualified,
                     src = src_selects.join(" UNION ALL "),
                     cols = cols_list,
                     on = on_clause,
+                    del = delete_clause,
                     matched = matched,
+                    guard = not_matched_guard,
                     ins = insert_vals,
                 )
             } else {
@@ -545,23 +589,57 @@ impl DuckdbEngine {
             let key_set: std::collections::HashSet<&str> =
                 spec.upsert_keys.iter().map(|s| s.as_str()).collect();
             let oq = |c: &str| format!("\"{}\"", c.replace('"', "\"\""));
+            // Delete-propagation control column (excluded from target data
+            // columns, kept in the source projection for the predicate).
+            let delete_col: Option<&str> = spec.delete_column.as_deref();
+            let data_cols: Vec<&String> = cols
+                .iter()
+                .filter(|c| Some(c.as_str()) != delete_col)
+                .collect();
+            let cols_list_data = data_cols
+                .iter()
+                .map(|c| oq(c))
+                .collect::<Vec<_>>()
+                .join(", ");
             let on_clause = spec
                 .upsert_keys
                 .iter()
                 .map(|k| format!("t.{0} = s.{0}", oq(k)))
                 .collect::<Vec<_>>()
                 .join(" AND ");
-            let update_set = cols
+            let update_set = data_cols
                 .iter()
                 .filter(|c| !key_set.contains(c.as_str()))
                 .map(|c| format!("t.{0} = s.{0}", oq(c)))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let insert_vals = cols
+            let insert_vals = data_cols
                 .iter()
                 .map(|c| format!("s.{}", oq(c)))
                 .collect::<Vec<_>>()
                 .join(", ");
+            // Oracle's MERGE deletes via `UPDATE SET ... DELETE WHERE (cond)`
+            // (it has no standalone `WHEN MATCHED ... THEN DELETE`): the row is
+            // updated first, then removed if the source flag marks a delete.
+            // The INSERT clause carries an optional WHERE so a flagged row with
+            // no target match is skipped. delete_part needs the UPDATE clause,
+            // so it only applies when there are non-key columns to set.
+            let (delete_part, insert_where) = match delete_col {
+                Some(dc) => {
+                    let q = oq(dc);
+                    let v = spec.delete_value.replace('\'', "''");
+                    let dp = if update_set.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" DELETE WHERE (s.{q} = '{v}')", q = q, v = v)
+                    };
+                    (
+                        dp,
+                        format!(" WHERE (s.{q} IS NULL OR s.{q} <> '{v}')", q = q, v = v),
+                    )
+                }
+                None => (String::new(), String::new()),
+            };
             let matched = if update_set.is_empty() {
                 String::new()
             } else {
@@ -595,13 +673,15 @@ impl DuckdbEngine {
                     })
                     .collect();
                 let merge = format!(
-                    "MERGE INTO {tgt} t USING ({src}) s ON ({on}){matched} WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({ins})",
+                    "MERGE INTO {tgt} t USING ({src}) s ON ({on}){matched}{del} WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({ins}){ins_where}",
                     tgt = qualified,
                     src = selects.join(" UNION ALL "),
                     on = on_clause,
                     matched = matched,
-                    cols = cols_list,
+                    del = delete_part,
+                    cols = cols_list_data,
                     ins = insert_vals,
+                    ins_where = insert_where,
                 );
                 conn.execute(&merge, &[])
                     .map_err(|e| EngineError::Query(format!("oracle merge: {}", e)))?;
@@ -4337,7 +4417,32 @@ impl DuckdbEngine {
             ss_quote_ident(&spec.schema),
             ss_quote_ident(&spec.table),
         );
-        let cols_list = cols
+        // Upsert (MERGE) clauses, when key columns are configured. Each batch
+        // becomes a single MERGE whose source is an inline VALUES table -
+        // stateless and correct against real SQL Server (no #temp needed).
+        let is_upsert = !spec.upsert_keys.is_empty();
+        // Delete-propagation control column (upsert only): flagged rows are
+        // DELETEd from the target by key, not written. It is a control column,
+        // so it is excluded from the target's data columns (auto-create,
+        // INSERT, UPDATE) while still projected in the source so the predicate
+        // can read it.
+        let delete_col: Option<&str> = if is_upsert {
+            spec.delete_column.as_deref()
+        } else {
+            None
+        };
+        let data_cols: Vec<&String> = cols
+            .iter()
+            .filter(|c| Some(c.as_str()) != delete_col)
+            .collect();
+        // Source column list (all cols incl. the delete flag) names the
+        // `AS s (...)` aliases; the data column list drives writes.
+        let src_cols_list = cols
+            .iter()
+            .map(|c| ss_quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cols_list = data_cols
             .iter()
             .map(|c| ss_quote_ident(c))
             .collect::<Vec<_>>()
@@ -4349,11 +4454,11 @@ impl DuckdbEngine {
         // in IF OBJECT_ID(...) IS NULL so an existing table is untouched.
         let col_types: std::collections::HashMap<String, String> =
             describe_columns(self, db, &spec.from_view).into_iter().collect();
-        let col_defs = cols
+        let col_defs = data_cols
             .iter()
             .map(|c| {
                 let ty = duckdb_type_to_sqlserver(
-                    col_types.get(c).map(|s| s.as_str()).unwrap_or("VARCHAR"),
+                    col_types.get(c.as_str()).map(|s| s.as_str()).unwrap_or("VARCHAR"),
                 );
                 format!("{} {}", ss_quote_ident(c), ty)
             })
@@ -4365,10 +4470,6 @@ impl DuckdbEngine {
             qualified,
             col_defs
         );
-        // Upsert (MERGE) clauses, when key columns are configured. Each batch
-        // becomes a single MERGE whose source is an inline VALUES table -
-        // stateless and correct against real SQL Server (no #temp needed).
-        let is_upsert = !spec.upsert_keys.is_empty();
         let on_clause = spec
             .upsert_keys
             .iter()
@@ -4377,17 +4478,30 @@ impl DuckdbEngine {
             .join(" AND ");
         let key_set: std::collections::HashSet<&str> =
             spec.upsert_keys.iter().map(|s| s.as_str()).collect();
-        let update_set = cols
+        let update_set = data_cols
             .iter()
             .filter(|c| !key_set.contains(c.as_str()))
             .map(|c| format!("t.{q} = s.{q}", q = ss_quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        let insert_vals = cols
+        let insert_vals = data_cols
             .iter()
             .map(|c| format!("s.{}", ss_quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
+        // DELETE-by-flag clause + a NULL-safe NOT-MATCHED guard so a flagged
+        // row that has no target match is skipped rather than inserted.
+        let (delete_clause, not_matched_guard) = match delete_col {
+            Some(dc) => {
+                let q = ss_quote_ident(dc);
+                let v = spec.delete_value.replace('\'', "''");
+                (
+                    format!(" WHEN MATCHED AND s.{q} = '{v}' THEN DELETE", q = q, v = v),
+                    format!(" AND (s.{q} IS NULL OR s.{q} <> '{v}')", q = q, v = v),
+                )
+            }
+            None => (String::new(), String::new()),
+        };
         let cancel = self.cancel.clone();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4451,12 +4565,15 @@ impl DuckdbEngine {
                             format!(" WHEN MATCHED THEN UPDATE SET {}", update_set)
                         };
                         format!(
-                            "MERGE INTO {tgt} AS t USING (VALUES {vals}) AS s ({cols}) ON {on}{matched} WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({ins});",
+                            "MERGE INTO {tgt} AS t USING (VALUES {vals}) AS s ({src_cols}) ON {on}{del}{matched} WHEN NOT MATCHED{guard} THEN INSERT ({cols}) VALUES ({ins});",
                             tgt = qualified,
                             vals = values.join(", "),
+                            src_cols = src_cols_list,
                             cols = cols_list,
                             on = on_clause,
+                            del = delete_clause,
                             matched = matched,
+                            guard = not_matched_guard,
                             ins = insert_vals,
                         )
                     } else {
@@ -4731,6 +4848,64 @@ impl DuckdbEngine {
                     // we should surface; log + continue.
                     eprintln!("mongo: drop before replace failed: {}", e);
                 }
+            }
+            // Upsert mode: replace_one(upsert=true) keyed on `upsert_keys`,
+            // which is the idiomatic, index-backed MongoDB upsert (one round
+            // trip per doc, no full-collection rewrite). Delete propagation:
+            // a doc whose `delete_column` equals `delete_value` is delete_one'd
+            // by the same key filter instead of being written; the control
+            // column is stripped from the stored document either way.
+            if !spec.upsert_keys.is_empty() {
+                let mut upserted = 0_usize;
+                let mut deleted = 0_usize;
+                for chunk in rows.chunks(spec.batch_size) {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err("cancelled".into());
+                    }
+                    for v in chunk {
+                        let mut doc = match mongodb::bson::to_document(v) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        };
+                        let mut filter = mongodb::bson::Document::new();
+                        for k in &spec.upsert_keys {
+                            if let Some(val) = doc.get(k) {
+                                filter.insert(k.clone(), val.clone());
+                            }
+                        }
+                        // No key value on this row -> nothing to match on; skip
+                        // rather than upsert an unkeyed document.
+                        if filter.is_empty() {
+                            continue;
+                        }
+                        let is_delete = spec
+                            .delete_column
+                            .as_deref()
+                            .map(|dc| doc.get_str(dc) == Ok(spec.delete_value.as_str()))
+                            .unwrap_or(false);
+                        if let Some(dc) = &spec.delete_column {
+                            doc.remove(dc);
+                        }
+                        if is_delete {
+                            collection
+                                .delete_one(filter)
+                                .await
+                                .map_err(|e| format!("delete_one: {}", e))?;
+                            deleted += 1;
+                        } else {
+                            collection
+                                .replace_one(filter, doc)
+                                .upsert(true)
+                                .await
+                                .map_err(|e| format!("replace_one: {}", e))?;
+                            upserted += 1;
+                        }
+                    }
+                }
+                return Ok(format!(
+                    "mongodb: upserted {} / deleted {} docs in {}.{}",
+                    upserted, deleted, spec.database, spec.collection
+                ));
             }
             let mut total = 0_usize;
             for chunk in rows.chunks(spec.batch_size) {
@@ -5766,14 +5941,25 @@ impl DuckdbEngine {
             ),
             _ => db_quote_ident(&spec.table),
         };
-        let cols_list = cols
+        // Upsert (MERGE) clauses when key columns are configured. Databricks
+        // (Spark SQL) accepts a subquery source and qualified UPDATE SET.
+        let is_upsert = !spec.upsert_keys.is_empty();
+        // Delete-propagation control column (upsert only): excluded from the
+        // target's data columns, kept in the source projection (see SQL Server).
+        let delete_col: Option<&str> = if is_upsert {
+            spec.delete_column.as_deref()
+        } else {
+            None
+        };
+        let data_cols: Vec<&String> = cols
+            .iter()
+            .filter(|c| Some(c.as_str()) != delete_col)
+            .collect();
+        let cols_list = data_cols
             .iter()
             .map(|c| db_quote_ident(c))
             .collect::<Vec<_>>()
             .join(", ");
-        // Upsert (MERGE) clauses when key columns are configured. Databricks
-        // (Spark SQL) accepts a subquery source and qualified UPDATE SET.
-        let is_upsert = !spec.upsert_keys.is_empty();
         let on_clause = spec
             .upsert_keys
             .iter()
@@ -5782,17 +5968,28 @@ impl DuckdbEngine {
             .join(" AND ");
         let dk_key_set: std::collections::HashSet<&str> =
             spec.upsert_keys.iter().map(|s| s.as_str()).collect();
-        let update_set = cols
+        let update_set = data_cols
             .iter()
             .filter(|c| !dk_key_set.contains(c.as_str()))
             .map(|c| format!("t.{q} = s.{q}", q = db_quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
-        let insert_vals = cols
+        let insert_vals = data_cols
             .iter()
             .map(|c| format!("s.{}", db_quote_ident(c)))
             .collect::<Vec<_>>()
             .join(", ");
+        let (delete_clause, not_matched_guard) = match delete_col {
+            Some(dc) => {
+                let q = db_quote_ident(dc);
+                let v = spec.delete_value.replace('\'', "''");
+                (
+                    format!(" WHEN MATCHED AND s.{q} = '{v}' THEN DELETE", q = q, v = v),
+                    format!(" AND (s.{q} IS NULL OR s.{q} <> '{v}')", q = q, v = v),
+                )
+            }
+            None => (String::new(), String::new()),
+        };
         let url = spec.endpoint.clone().unwrap_or_else(|| {
             format!("https://{}/api/2.0/sql/statements/", spec.workspace)
         });
@@ -5840,12 +6037,14 @@ impl DuckdbEngine {
                     format!(" WHEN MATCHED THEN UPDATE SET {}", update_set)
                 };
                 format!(
-                    "MERGE INTO {tgt} t USING ({src}) s ON {on}{matched} WHEN NOT MATCHED THEN INSERT ({cols}) VALUES ({ins})",
+                    "MERGE INTO {tgt} t USING ({src}) s ON {on}{del}{matched} WHEN NOT MATCHED{guard} THEN INSERT ({cols}) VALUES ({ins})",
                     tgt = qualified,
                     src = src_selects.join(" UNION ALL "),
                     cols = cols_list,
                     on = on_clause,
+                    del = delete_clause,
                     matched = matched,
+                    guard = not_matched_guard,
                     ins = insert_vals,
                 )
             } else {

@@ -2751,12 +2751,18 @@ pub(crate) fn sql_escape(s: &str) -> String {
 /// DB (through postgres_execute / mysql_execute), reading from the
 /// staging table we just populated via ATTACH. Identifiers are native
 /// to each family: double-quoted for Postgres, backticks for MySQL.
+/// Build the native upsert statements to run on the target DB. Returns one
+/// or more statements: Postgres tolerates a single multi-statement string
+/// (run via postgres_execute), but MySQL's extension can't (it raises
+/// "Commands out of sync"), so the MySQL path returns each statement
+/// separately and the caller issues them one at a time.
 fn build_native_upsert_sql(
     spec: &plan::UpsertSpec,
     set_cols: &[&String],
+    data_cols: &[&String],
     target_native: &str,
     staging_native: &str,
-) -> String {
+) -> Vec<String> {
     match spec.family {
         plan::UpsertFamily::Postgres => {
             let key_list = spec
@@ -2778,35 +2784,123 @@ fn build_native_upsert_sql(
                     .join(", ");
                 format!("ON CONFLICT ({}) DO UPDATE SET {}", key_list, set_clause)
             };
-            format!(
-                "INSERT INTO {target} SELECT * FROM {staging} {conflict}; DROP TABLE {staging};",
-                target = target_native,
-                staging = staging_native,
-                conflict = conflict
-            )
+            match spec.delete_column.as_deref() {
+                // No delete propagation: insert every staged row verbatim.
+                None => vec![format!(
+                    "INSERT INTO {target} SELECT * FROM {staging} {conflict}; DROP TABLE {staging};",
+                    target = target_native,
+                    staging = staging_native,
+                    conflict = conflict
+                )],
+                // Delete propagation: the flag column is staged but is not a
+                // target column, so the INSERT lists explicit data columns and
+                // skips flagged rows; a prior DELETE removes flagged keys.
+                Some(dc) => {
+                    let flag = format!("\"{}\"", dc.replace('"', "\"\""));
+                    let v = spec.delete_value.replace('\'', "''");
+                    let col_list = data_cols
+                        .iter()
+                        .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    vec![format!(
+                        "DELETE FROM {target} WHERE ({keys}) IN (SELECT {keys} FROM {staging} WHERE {flag} = '{v}'); \
+                         INSERT INTO {target} ({cols}) SELECT {cols} FROM {staging} WHERE ({flag} IS NULL OR {flag} <> '{v}') {conflict}; \
+                         DROP TABLE {staging};",
+                        target = target_native,
+                        staging = staging_native,
+                        keys = key_list,
+                        flag = flag,
+                        v = v,
+                        cols = col_list,
+                        conflict = conflict
+                    )]
+                }
+            }
         }
         plan::UpsertFamily::MySql => {
             // MySQL relies on the target's existing UNIQUE/PRIMARY KEY.
             // INSERT IGNORE is the fallback when there are no non-key
-            // columns to update.
-            if set_cols.is_empty() {
-                format!(
-                    "INSERT IGNORE INTO {target} SELECT * FROM {staging}; DROP TABLE {staging};",
-                    target = target_native,
-                    staging = staging_native
-                )
+            // columns to update. The target is re-quoted with backticks
+            // from the raw name (DuckDB's `target` uses double quotes, which
+            // MySQL rejects unless ANSI_QUOTES is set).
+            let target_native = match &spec.raw_schema {
+                Some(s) => format!("`{}`.`{}`", s.replace('`', "``"), spec.raw_table.replace('`', "``")),
+                None => format!("`{}`", spec.raw_table.replace('`', "``")),
+            };
+            let target_native = target_native.as_str();
+            let on_dup = if set_cols.is_empty() {
+                None
             } else {
-                let set_clause = set_cols
-                    .iter()
-                    .map(|c| format!("`{c}` = VALUES(`{c}`)"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "INSERT INTO {target} SELECT * FROM {staging} ON DUPLICATE KEY UPDATE {set}; DROP TABLE {staging};",
-                    target = target_native,
-                    staging = staging_native,
-                    set = set_clause
+                Some(
+                    set_cols
+                        .iter()
+                        .map(|c| format!("`{c}` = VALUES(`{c}`)"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 )
+            };
+            match spec.delete_column.as_deref() {
+                None => {
+                    let insert = if let Some(set_clause) = on_dup {
+                        format!(
+                            "INSERT INTO {target} SELECT * FROM {staging} ON DUPLICATE KEY UPDATE {set}",
+                            target = target_native,
+                            staging = staging_native,
+                            set = set_clause
+                        )
+                    } else {
+                        format!(
+                            "INSERT IGNORE INTO {target} SELECT * FROM {staging}",
+                            target = target_native,
+                            staging = staging_native
+                        )
+                    };
+                    vec![insert, format!("DROP TABLE {}", staging_native)]
+                }
+                Some(dc) => {
+                    let flag = format!("`{}`", dc.replace('`', "``"));
+                    let v = spec.delete_value.replace('\'', "''");
+                    let key_list = spec
+                        .conflict_cols
+                        .iter()
+                        .map(|c| format!("`{}`", c.replace('`', "``")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let col_list = data_cols
+                        .iter()
+                        .map(|c| format!("`{}`", c.replace('`', "``")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let insert_head = match &on_dup {
+                        Some(_) => format!("INSERT INTO {}", target_native),
+                        None => format!("INSERT IGNORE INTO {}", target_native),
+                    };
+                    let on_dup_tail = match on_dup {
+                        Some(set_clause) => format!(" ON DUPLICATE KEY UPDATE {}", set_clause),
+                        None => String::new(),
+                    };
+                    vec![
+                        format!(
+                            "DELETE FROM {target} WHERE ({keys}) IN (SELECT {keys} FROM {staging} WHERE {flag} = '{v}')",
+                            target = target_native,
+                            staging = staging_native,
+                            keys = key_list,
+                            flag = flag,
+                            v = v
+                        ),
+                        format!(
+                            "{head} ({cols}) SELECT {cols} FROM {staging} WHERE ({flag} IS NULL OR {flag} <> '{v}'){tail}",
+                            staging = staging_native,
+                            flag = flag,
+                            v = v,
+                            cols = col_list,
+                            head = insert_head,
+                            tail = on_dup_tail
+                        ),
+                        format!("DROP TABLE {}", staging_native),
+                    ]
+                }
             }
         }
     }

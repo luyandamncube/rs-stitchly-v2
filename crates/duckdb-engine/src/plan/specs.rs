@@ -99,6 +99,12 @@ pub struct SnowflakeSinkSpec {
     /// Non-empty in "upsert" write mode: the key columns to MERGE on.
     /// Empty means plain INSERT.
     pub upsert_keys: Vec<String>,
+    /// Upsert delete propagation: when set, rows whose `delete_column`
+    /// equals `delete_value` are removed from the target (matched by key)
+    /// instead of being inserted/updated. Drives CDC deletes (xf.cdc.diff
+    /// / DuckLake CDC change_type='delete'). None disables it.
+    pub delete_column: Option<String>,
+    pub delete_value: String,
 }
 
 /// src.snowflake: SQL API read. Sends a SELECT (either user-provided
@@ -136,6 +142,9 @@ pub struct OracleSinkSpec {
     /// Non-empty in "upsert" write mode: the key columns to MERGE on.
     /// Empty means plain INSERT.
     pub upsert_keys: Vec<String>,
+    /// Upsert delete propagation (see SnowflakeSinkSpec). None disables it.
+    pub delete_column: Option<String>,
+    pub delete_value: String,
 }
 
 /// src.oracle: Oracle SELECT via the oracle crate. Same feature gate.
@@ -784,6 +793,9 @@ pub struct SqlServerSinkSpec {
     /// Non-empty in "upsert" write mode: the key columns to MERGE on.
     /// Empty means plain INSERT (append / create).
     pub upsert_keys: Vec<String>,
+    /// Upsert delete propagation (see SnowflakeSinkSpec). None disables it.
+    pub delete_column: Option<String>,
+    pub delete_value: String,
 }
 
 /// src.sqlserver / src.synapse: TDS SELECT via tiberius.
@@ -841,9 +853,16 @@ pub struct MongoSinkSpec {
     pub database: String,
     pub collection: String,
     /// 'insert' = insert_many; 'replace' = drop the collection first
-    /// then insert; 'upsert' is a follow-up commit (needs key column).
+    /// then insert; 'upsert' = replace_one(upsert) keyed on `upsert_keys`.
     pub mode: String,
     pub batch_size: usize,
+    /// Non-empty in "upsert" mode: the document fields that form the match
+    /// filter for replace_one(upsert=true). Empty falls back to insert.
+    pub upsert_keys: Vec<String>,
+    /// Upsert delete propagation: documents whose `delete_column` equals
+    /// `delete_value` are delete_one'd (matched by key) instead of upserted.
+    pub delete_column: Option<String>,
+    pub delete_value: String,
 }
 
 /// src.mongodb: find() against a MongoDB collection with an optional
@@ -997,6 +1016,9 @@ pub struct DatabricksSinkSpec {
     pub wait_timeout_seconds: u64,
     /// Non-empty in "upsert" write mode: the key columns to MERGE on.
     pub upsert_keys: Vec<String>,
+    /// Upsert delete propagation (see SnowflakeSinkSpec). None disables it.
+    pub delete_column: Option<String>,
+    pub delete_value: String,
 }
 
 /// snk.webhook / snk.rest / vendor HTTP sinks: one HTTP POST/PUT
@@ -1040,8 +1062,19 @@ pub struct UpsertSpec {
     pub target: String,
     /// The upstream materialized table name in the temp DB.
     pub from_view: String,
+    /// Raw (unquoted) target schema + table. `target` is pre-quoted with
+    /// DuckDB's double-quote convention, which is correct for Postgres but
+    /// wrong for MySQL (backticks); the native-SQL builder re-quotes per
+    /// family from these raw names.
+    pub raw_schema: Option<String>,
+    pub raw_table: String,
     /// Columns the user declared as the conflict key.
     pub conflict_cols: Vec<String>,
+    /// Upsert delete propagation: rows whose `delete_column` equals
+    /// `delete_value` are DELETEd from the target by key and excluded from
+    /// the INSERT. None keeps the plain ON CONFLICT / ON DUPLICATE KEY path.
+    pub delete_column: Option<String>,
+    pub delete_value: String,
 }
 
 #[derive(Debug, Clone, Copy)]

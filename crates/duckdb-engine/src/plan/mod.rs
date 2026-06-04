@@ -422,6 +422,27 @@ fn upsert_keys_from(props: &JsonValue) -> Vec<String> {
     }
 }
 
+/// Delete-propagation control column for a sink's "upsert" write mode. When
+/// the form sets `mode = "upsert"` and a `deleteColumn`, rows whose value in
+/// that column equals `deleteValue` are removed from the target by key instead
+/// of being upserted - this is how CDC deletes (xf.cdc.diff change_type /
+/// DuckLake CDC) flow through. Returns None outside upsert mode or when unset.
+fn delete_column_from(props: &JsonValue) -> Option<String> {
+    if string_prop(props, "mode").as_deref() == Some("upsert") {
+        string_prop(props, "deleteColumn").filter(|s| !s.is_empty())
+    } else {
+        None
+    }
+}
+
+/// The value in `deleteColumn` that marks a row for deletion (default
+/// "delete", matching xf.cdc.diff's change_type tag).
+fn delete_value_from(props: &JsonValue) -> String {
+    string_prop(props, "deleteValue")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "delete".into())
+}
+
 fn build_stage(
     node: &PipelineNode,
     component_id: &str,
@@ -765,6 +786,8 @@ fn build_stage(
                 .filter(|n| *n > 0 && *n <= 50) // Databricks max is 50s
                 .unwrap_or(30),
             upsert_keys: upsert_keys_from(&props),
+            delete_column: delete_column_from(&props),
+            delete_value: delete_value_from(&props),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.oracle" {
@@ -790,6 +813,8 @@ fn build_stage(
             table,
             batch_size: props.get("batchSize").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(1000) as usize,
             upsert_keys: upsert_keys_from(&props),
+            delete_column: delete_column_from(&props),
+            delete_value: delete_value_from(&props),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.redis" {
@@ -870,6 +895,8 @@ fn build_stage(
             batch_size: props.get("batchSize").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(1000) as usize,
             trust_cert: props.get("trustCert").and_then(|v| v.as_bool()).unwrap_or(false),
             upsert_keys: upsert_keys_from(&props),
+            delete_column: delete_column_from(&props),
+            delete_value: delete_value_from(&props),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.clickhouse" {
@@ -918,6 +945,9 @@ fn build_stage(
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0)
                 .unwrap_or(1000) as usize,
+            upsert_keys: upsert_keys_from(&props),
+            delete_column: delete_column_from(&props),
+            delete_value: delete_value_from(&props),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.snowflake" {
@@ -974,6 +1004,8 @@ fn build_stage(
                 .filter(|n| *n > 0)
                 .unwrap_or(1000) as usize,
             upsert_keys: upsert_keys_from(&props),
+            delete_column: delete_column_from(&props),
+            delete_value: delete_value_from(&props),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.elastic" || component_id == "snk.opensearch" {
@@ -1236,7 +1268,11 @@ fn build_stage(
                 attach: attach.clone(),
                 target,
                 from_view: from_view.to_string(),
+                raw_schema: schema.clone(),
+                raw_table: table.clone(),
                 conflict_cols,
+                delete_column: delete_column_from(&props),
+                delete_value: delete_value_from(&props),
             });
             (String::new(), StageKind::Sink, Some(from_view.to_string()))
         } else {
