@@ -28,12 +28,12 @@
     --btn-primary-bg-strong: #ffd400;
     --btn-primary-fg: #07090f;
 
-    /* Secondary accent - DuckDB azure blue, for selection / focus / primary
-       controls. Pairs with the lemon brand without the off-brand violet. */
-    --accent: #3d8bff;
-    --accent-strong: #5fa0ff;
-    --accent-soft: rgba(61, 139, 255, 0.16);
-    --accent-glow: rgba(61, 139, 255, 0.35);
+    /* Interactive accent - the DuckDB lemon brand, used for selection /
+       focus / links so highlights read yellow in dark mode. */
+    --accent: #fff100;
+    --accent-strong: #ffd400;
+    --accent-soft: rgba(255, 241, 0, 0.16);
+    --accent-glow: rgba(255, 241, 0, 0.35);
 
     /* The brand gradient - used on the wordmark, primary CTAs, and the
        visual mapper button. DuckDB lemon -> hot orange ("duck"). */
@@ -56,8 +56,8 @@
         0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 18px rgba(0, 0, 0, 0.45);
     --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.04) inset,
         0 4px 12px rgba(0, 0, 0, 0.4), 0 20px 50px rgba(0, 0, 0, 0.6);
-    --shadow-glow: 0 0 24px rgba(61, 139, 255, 0.2);
-    --focus-ring: 0 0 0 3px rgba(61, 139, 255, 0.25);
+    --shadow-glow: 0 0 24px rgba(255, 241, 0, 0.2);
+    --focus-ring: 0 0 0 3px rgba(255, 241, 0, 0.25);
 
     --radius-sm: 6px;
     --radius: 8px;
@@ -103,7 +103,7 @@ body,
         ),
         radial-gradient(
             ellipse 1000px 500px at 100% 100%,
-            rgba(61, 139, 255, 0.04),
+            rgba(255, 241, 0, 0.04),
             transparent 70%
         ),
         var(--bg-0);
@@ -273,7 +273,7 @@ textarea:focus-visible {
     background: linear-gradient(
         90deg,
         transparent,
-        rgba(61, 139, 255, 0.25),
+        rgba(255, 241, 0, 0.25),
         rgba(255, 241, 0, 0.18),
         transparent
     );
@@ -305,7 +305,7 @@ textarea:focus-visible {
     box-shadow:
         0 0 0 1px rgba(255, 241, 0, 0.32) inset,
         0 4px 14px rgba(255, 241, 0, 0.3),
-        0 0 24px rgba(61, 139, 255, 0.25);
+        0 0 24px rgba(255, 241, 0, 0.25);
     letter-spacing: 0;
 }
 
@@ -2585,8 +2585,8 @@ html[dir='rtl'] .topbar-lang {
     gap: 8px;
     padding: 7px 9px;
     border-radius: 7px;
-    background: rgba(61, 139, 255, 0.1);
-    border: 1px solid rgba(61, 139, 255, 0.35);
+    background: rgba(255, 241, 0, 0.1);
+    border: 1px solid rgba(255, 241, 0, 0.35);
 }
 
 .ctx-bound-token {
@@ -4647,11 +4647,10 @@ html[dir='rtl'] .topbar-lang {
     --text-3: #6d7585;
     --text-4: #a3acbd;
 
-    /* Light theme: DuckDB azure blue for the interactive accent (a
-       non-violet hue that still reads as part of the data ecosystem),
-       deep enough to carry white button text. */
-    --accent: #1f6feb;
-    --accent-strong: #1a5fd0;
+    /* Light theme: deep orange interactive accent so selection / focus read
+       orange in light mode (matches the primary buttons). */
+    --accent: #e8590c;
+    --accent-strong: #d24f09;
     /* DuckDB lemon is unreadable as text on light surfaces, so the light
        theme uses a deep gold for the primary accent (brand identity stays
        yellow; the in-app logo/gradient still use pure lemon). */
@@ -4662,8 +4661,8 @@ html[dir='rtl'] .topbar-lang {
     --btn-primary-bg: #e8590c;
     --btn-primary-bg-strong: #d24f09;
     --btn-primary-fg: #ffffff;
-    --accent-soft: rgba(31, 111, 235, 0.1);
-    --accent-glow: rgba(31, 111, 235, 0.22);
+    --accent-soft: rgba(232, 89, 12, 0.1);
+    --accent-glow: rgba(232, 89, 12, 0.22);
 
     --kind-source: #1f8fd0;
     --kind-transform: #4a5160;
@@ -4680,8 +4679,8 @@ html[dir='rtl'] .topbar-lang {
         0 1px 2px rgba(11, 15, 26, 0.05), 0 6px 16px rgba(11, 15, 26, 0.06);
     --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.7) inset,
         0 4px 12px rgba(11, 15, 26, 0.08), 0 16px 40px rgba(11, 15, 26, 0.1);
-    --shadow-glow: 0 0 16px rgba(31, 111, 235, 0.18);
-    --focus-ring: 0 0 0 3px rgba(31, 111, 235, 0.22);
+    --shadow-glow: 0 0 16px rgba(232, 89, 12, 0.18);
+    --focus-ring: 0 0 0 3px rgba(232, 89, 12, 0.22);
 
     color-scheme: light;
 }
@@ -4697,7 +4696,7 @@ html[dir='rtl'] .topbar-lang {
         ),
         radial-gradient(
             ellipse 1000px 500px at 100% 100%,
-            rgba(31, 111, 235, 0.05),
+            rgba(232, 89, 12, 0.05),
             transparent 70%
         ),
         var(--bg-0);
@@ -4713,7 +4712,7 @@ html[dir='rtl'] .topbar-lang {
 :root[data-theme='light'] .node.is-selected {
     box-shadow:
         0 0 0 1px var(--accent),
-        0 0 20px rgba(31, 111, 235, 0.18),
+        0 0 20px rgba(232, 89, 12, 0.18),
         var(--shadow-1);
 }
 
@@ -4721,7 +4720,7 @@ html[dir='rtl'] .topbar-lang {
     background: linear-gradient(
         90deg,
         transparent,
-        rgba(31, 111, 235, 0.35),
+        rgba(232, 89, 12, 0.35),
         rgba(184, 134, 11, 0.28),
         transparent
     );
@@ -4730,7 +4729,7 @@ html[dir='rtl'] .topbar-lang {
 :root[data-theme='light'] .brand-mark {
     box-shadow:
         0 0 0 1px rgba(184, 134, 11, 0.5) inset,
-        0 2px 8px rgba(31, 111, 235, 0.25);
+        0 2px 8px rgba(232, 89, 12, 0.25);
     color: white;
 }
 
@@ -4769,9 +4768,9 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .schema-source-banner {
-    background: rgba(31, 111, 235, 0.08);
+    background: rgba(232, 89, 12, 0.08);
     color: var(--accent);
-    border-color: rgba(31, 111, 235, 0.25);
+    border-color: rgba(232, 89, 12, 0.25);
 }
 
 :root[data-theme='light'] .schema-source-banner-declared {
@@ -4794,7 +4793,7 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .mapper-input-port-name {
-    background: rgba(31, 111, 235, 0.1);
+    background: rgba(232, 89, 12, 0.1);
 }
 
 :root[data-theme='light'] .edge-label-reject .edge-label-badge {
@@ -4826,12 +4825,12 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .mapper-input-col.is-used {
-    background: rgba(31, 111, 235, 0.08);
+    background: rgba(232, 89, 12, 0.08);
 }
 
 :root[data-theme='light'] .modal-tip {
-    background: rgba(31, 111, 235, 0.06);
-    border-color: rgba(31, 111, 235, 0.2);
+    background: rgba(232, 89, 12, 0.06);
+    border-color: rgba(232, 89, 12, 0.2);
 }
 
 :root[data-theme='light'] .markdown-body code {
@@ -4840,7 +4839,7 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .markdown-body blockquote {
-    background: rgba(31, 111, 235, 0.06);
+    background: rgba(232, 89, 12, 0.06);
 }
 
 :root[data-theme='light'] .markdown-body img {
@@ -4848,7 +4847,7 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .repo-node.is-active {
-    background: rgba(31, 111, 235, 0.1);
+    background: rgba(232, 89, 12, 0.1);
     color: var(--accent);
 }
 
@@ -4902,7 +4901,7 @@ html[dir='rtl'] .topbar-lang {
     box-shadow:
         0 0 0 1px rgba(255, 241, 0, 0.32) inset,
         0 8px 32px rgba(255, 241, 0, 0.32),
-        0 0 32px rgba(61, 139, 255, 0.3);
+        0 0 32px rgba(255, 241, 0, 0.3);
     flex-shrink: 0;
 }
 
@@ -5265,9 +5264,9 @@ html[dir='rtl'] .topbar-lang {
 }
 
 .node-run-badge-running {
-    background: rgba(61, 139, 255, 0.15);
+    background: rgba(255, 241, 0, 0.15);
     color: var(--accent);
-    border: 1px solid rgba(61, 139, 255, 0.4);
+    border: 1px solid rgba(255, 241, 0, 0.4);
 }
 
 .node-run-badge-running svg {
@@ -5295,7 +5294,7 @@ html[dir='rtl'] .topbar-lang {
 .node.is-run-running {
     box-shadow:
         0 0 0 1px var(--accent),
-        0 0 0 4px rgba(61, 139, 255, 0.18),
+        0 0 0 4px rgba(255, 241, 0, 0.18),
         var(--shadow-1);
 }
 
@@ -6036,7 +6035,7 @@ html[dir='rtl'] .topbar-lang {
     margin-top: 8px;
     padding: 8px 16px;
     background: var(--accent);
-    color: white;
+    color: var(--bg-0);
     border: 0;
     border-radius: 8px;
     font-size: 12.5px;
@@ -6188,7 +6187,7 @@ html[dir='rtl'] .topbar-lang {
     margin-top: 8px;
     padding: 6px 10px;
     background: var(--accent);
-    color: white;
+    color: var(--bg-0);
     border: 0;
     border-radius: 6px;
     font-size: 11.5px;
@@ -6237,7 +6236,7 @@ html[dir='rtl'] .topbar-lang {
     justify-content: center;
     padding: 0 12px;
     background: var(--accent);
-    color: white;
+    color: var(--bg-0);
     border: 0;
     border-radius: 8px;
     cursor: pointer;
@@ -6565,7 +6564,7 @@ html[dir='rtl'] .topbar-lang {
     padding: 8px 12px;
     background: var(--accent);
     border: 0;
-    color: white;
+    color: var(--bg-0);
     border-radius: 6px;
     font-size: 12px;
     font-weight: 600;
@@ -6694,7 +6693,7 @@ html[dir='rtl'] .topbar-lang {
 }
 .ci-badge-busy {
     color: var(--accent-strong);
-    border-color: rgba(61, 139, 255, 0.4);
+    border-color: rgba(255, 241, 0, 0.4);
 }
 .ci-badge-mute {
     color: var(--text-3);

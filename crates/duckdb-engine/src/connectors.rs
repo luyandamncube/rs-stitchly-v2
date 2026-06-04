@@ -5381,7 +5381,7 @@ impl DuckdbEngine {
         branches: &[String],
         snapshot: &Path,
         max_concurrency: usize,
-    ) -> Result<(), EngineError> {
+    ) -> Result<Vec<crate::RunResult>, EngineError> {
         // Forward slashes + no quotes -> safe to splice into the branch JSON.
         let snap = snapshot.display().to_string().replace('\\', "/");
         let wave = if max_concurrency == 0 {
@@ -5389,17 +5389,21 @@ impl DuckdbEngine {
         } else {
             max_concurrency
         };
+        // Collect each branch's RunResult so the caller can fold the branch
+        // nodes (and their sink row counts) back into the parent run report -
+        // otherwise a parallelize-terminated pipeline shows "0 rows written".
+        let mut results: Vec<crate::RunResult> = Vec::new();
         for chunk in branches.chunks(wave) {
             let mut handles = Vec::with_capacity(chunk.len());
             for doc_json in chunk {
                 let engine = self.clone();
                 let content = doc_json.replace("${__PSNAP__}", &snap);
-                handles.push(std::thread::spawn(move || -> Result<(), String> {
+                handles.push(std::thread::spawn(move || -> Result<crate::RunResult, String> {
                     let doc: plan::PipelineDoc = serde_json::from_str(&content)
                         .map_err(|e| format!("branch parse: {}", e))?;
                     let r = engine.execute_pipeline(&doc);
                     if r.status == "ok" {
-                        Ok(())
+                        Ok(r)
                     } else {
                         Err(r.error.unwrap_or_else(|| "branch failed".into()))
                     }
@@ -5407,13 +5411,13 @@ impl DuckdbEngine {
             }
             for h in handles {
                 match h.join() {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(r)) => results.push(r),
                     Ok(Err(e)) => return Err(EngineError::Query(e)),
                     Err(_) => return Err(EngineError::Query("branch thread panicked".into())),
                 }
             }
         }
-        Ok(())
+        Ok(results)
     }
 
     /// Read a pipeline file, perform `${KEY}` text substitution from

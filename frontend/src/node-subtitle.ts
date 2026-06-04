@@ -55,8 +55,13 @@ export function deriveNodeSubtitle(
         }
         case 'xf.agg':
         case 'xf.groupby': {
-            const gb = strs(p.groupBy);
-            return gb.length ? `by ${gb.join(', ')}` : undefined;
+            // The form writes `groupKeys`; older configs used `groupBy`.
+            const gb = strs(p.groupKeys).length ? strs(p.groupKeys) : strs(p.groupBy);
+            const aggs = arr(p.aggregations).length;
+            const parts: string[] = [];
+            if (gb.length) parts.push(`by ${gb.join(', ')}`);
+            if (aggs) parts.push(`${aggs} agg${aggs === 1 ? '' : 's'}`);
+            return parts.length ? parts.join(' · ') : undefined;
         }
         case 'xf.sort': {
             const n = arr(p.orderBy).length;

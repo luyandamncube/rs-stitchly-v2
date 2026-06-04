@@ -681,12 +681,46 @@ impl DuckdbEngine {
                         self.run_parallel_branches(&spec.branches, &snap, spec.max_concurrency)
                     });
                     let _ = std::fs::remove_file(&snap);
-                    if let Err(e) = outcome {
-                        result = Err(EngineError::Query(format!(
-                            "ctl.parallelize({}): {}",
-                            stage.node_id, e
-                        )));
-                        continue;
+                    match outcome {
+                        Err(e) => {
+                            result = Err(EngineError::Query(format!(
+                                "ctl.parallelize({}): {}",
+                                stage.node_id, e
+                            )));
+                            continue;
+                        }
+                        Ok(branch_results) => {
+                            // Fold each branch's node statuses into this run so the
+                            // Run report + "rows written" include the branch sinks
+                            // (they execute as isolated sub-pipelines). Skip the
+                            // injected snapshot source, whose id == the parallelize
+                            // node id, so it doesn't shadow the parent's own entry.
+                            for br in &branch_results {
+                                for (nid, st) in &br.nodes {
+                                    if *nid == stage.node_id {
+                                        continue;
+                                    }
+                                    on_event(PipelineEvent::StageFinished {
+                                        node_id: nid.clone(),
+                                        kind: st.kind.clone().unwrap_or_default(),
+                                        status: st.status.clone(),
+                                        rows: st.rows,
+                                        duration_ms: st.duration_ms.unwrap_or(0),
+                                        error: st.error.clone(),
+                                    });
+                                    nodes.insert(
+                                        nid.clone(),
+                                        NodeRunStatus {
+                                            status: st.status.clone(),
+                                            kind: st.kind.clone(),
+                                            rows: st.rows,
+                                            duration_ms: st.duration_ms,
+                                            error: st.error.clone(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 // ctl.log / ctl.warn: emit a diagnostic line ({rows} -> the

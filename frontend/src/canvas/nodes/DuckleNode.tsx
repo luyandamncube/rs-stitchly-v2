@@ -1,10 +1,11 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
     Handle,
     Position,
     useNodes,
     useEdges,
+    useUpdateNodeInternals,
     type Node,
     type NodeProps,
 } from '@xyflow/react';
@@ -48,6 +49,17 @@ export default function DuckleNode({ id, data, selected, type }: NodeProps<Duckl
             return { id: `main_${n}`, label: `branch ${n}`, type: 'main', optional: n > 2 };
         });
     }, [data.componentId, outputs, allEdges, id]);
+
+    // React Flow caches handle positions per node; when the parallelize
+    // node grows/shrinks its branch handles dynamically, we must tell React
+    // Flow to remeasure or edges to the new handles won't render (they bind
+    // to handle ids that did not exist at the node's first measure).
+    const updateNodeInternals = useUpdateNodeInternals();
+    useEffect(() => {
+        if (data.componentId === 'ctl.parallelize') {
+            updateNodeInternals(id);
+        }
+    }, [effectiveOutputs.length, id, data.componentId, updateNodeInternals]);
 
     const portCount = Math.max(inputs.length, effectiveOutputs.length);
 
