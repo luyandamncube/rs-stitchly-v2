@@ -22,6 +22,12 @@
     --accent-cyan: #fff100;
     --accent-cyan-strong: #ffd400;
 
+    /* Primary CTA buttons (Run / Open visual mapper / btn-primary): DuckDB
+       lemon-yellow fill with dark text in dark mode. */
+    --btn-primary-bg: #fff100;
+    --btn-primary-bg-strong: #ffd400;
+    --btn-primary-fg: #07090f;
+
     /* Secondary accent - DuckDB azure blue, for selection / focus / primary
        controls. Pairs with the lemon brand without the off-brand violet. */
     --accent: #3d8bff;
@@ -2775,14 +2781,14 @@ html[dir='rtl'] .topbar-lang {
 }
 
 .toolbar-run {
-    background: rgba(46, 175, 255, 0.12);
-    border-color: rgba(46, 175, 255, 0.3);
-    color: var(--accent-source);
+    background: var(--btn-primary-bg);
+    border-color: var(--btn-primary-bg);
+    color: var(--btn-primary-fg);
 }
 
 .toolbar-run:hover {
-    background: rgba(46, 175, 255, 0.18);
-    border-color: rgba(46, 175, 255, 0.5);
+    background: var(--btn-primary-bg-strong);
+    border-color: var(--btn-primary-bg-strong);
 }
 
 .toolbar-stop {
@@ -3791,10 +3797,10 @@ html[dir='rtl'] .topbar-lang {
     justify-content: center;
     gap: 8px;
     width: 100%;
-    background: linear-gradient(135deg, var(--accent), var(--kind-control));
+    background: var(--btn-primary-bg);
     border: none;
     border-radius: 8px;
-    color: var(--bg-0);
+    color: var(--btn-primary-fg);
     padding: 10px 14px;
     font-size: 12px;
     font-weight: 700;
@@ -4248,15 +4254,15 @@ html[dir='rtl'] .topbar-lang {
 }
 
 .btn-primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: white;
+    background: var(--btn-primary-bg);
+    border-color: var(--btn-primary-bg);
+    color: var(--btn-primary-fg);
     box-shadow: var(--shadow-glow);
 }
 
 .btn-primary:hover {
-    background: var(--accent-strong);
-    border-color: var(--accent-strong);
+    background: var(--btn-primary-bg-strong);
+    border-color: var(--btn-primary-bg-strong);
     filter: brightness(1.05);
 }
 
@@ -4651,6 +4657,11 @@ html[dir='rtl'] .topbar-lang {
        yellow; the in-app logo/gradient still use pure lemon). */
     --accent-cyan: #b8860b;
     --accent-cyan-strong: #946f00;
+    /* Primary CTA buttons: hot orange fill with white text in light mode
+       (deepened from the brand #ff6900 so white label text stays readable). */
+    --btn-primary-bg: #e8590c;
+    --btn-primary-bg-strong: #d24f09;
+    --btn-primary-fg: #ffffff;
     --accent-soft: rgba(31, 111, 235, 0.1);
     --accent-glow: rgba(31, 111, 235, 0.22);
 
@@ -4724,8 +4735,7 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .properties-mapper-button {
-    color: white;
-    box-shadow: 0 4px 12px rgba(31, 111, 235, 0.25);
+    box-shadow: 0 4px 12px rgba(232, 89, 12, 0.25);
 }
 
 :root[data-theme='light'] .btn-primary {
@@ -4744,12 +4754,6 @@ html[dir='rtl'] .topbar-lang {
 
 :root[data-theme='light'] .edge-label.is-selected {
     color: var(--text-1);
-}
-
-:root[data-theme='light'] .toolbar-run {
-    background: rgba(31, 143, 208, 0.12);
-    border-color: rgba(31, 143, 208, 0.3);
-    color: var(--success);
 }
 
 :root[data-theme='light'] .toolbar-stop {
