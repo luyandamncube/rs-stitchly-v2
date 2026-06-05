@@ -109,7 +109,8 @@ fn poll_github(remote_url: &str, branch: &str, token: Option<&str>) -> Result<Ci
         slug,
         urlencoding_minimal(branch)
     );
-    let mut req = ureq::get(&api)
+    let mut req = duckle_duckdb_engine::tls::http_agent()
+        .get(&api)
         .set("User-Agent", "duckle-app")
         .set("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(8));
@@ -179,7 +180,8 @@ fn poll_gitlab(remote_url: &str, branch: &str, token: Option<&str>) -> Result<Ci
         project_id,
         urlencoding_minimal(branch)
     );
-    let mut req = ureq::get(&api)
+    let mut req = duckle_duckdb_engine::tls::http_agent()
+        .get(&api)
         .set("User-Agent", "duckle-app")
         .timeout(Duration::from_secs(8));
     if let Some(t) = token {

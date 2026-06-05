@@ -798,6 +798,7 @@ A few knobs you can set without touching code.
 | **DuckDB extensions** | Pre-fetched at install; lazy-loaded for `spatial` | See [First-launch extension pre-fetch](#first-launch-extension-pre-fetch) |
 | **Env var `RUST_LOG`** | Before launching the binary | `RUST_LOG=debug duckle.exe` to see verbose engine logs |
 | **Env var `DUCKLE_DUCKDB_BIN`** | Before running engine tests | Points the integration test suite at a DuckDB CLI |
+| **Env var `DUCKLE_CA_CERT`** | Before launching the binary | Path to a PEM bundle of extra CA certificates to trust (corporate proxy / private CA), added on top of the OS trust store and bundled roots |
 
 ---
 
@@ -930,6 +931,7 @@ See the [Contributing](#contributing) section and `crates/duckdb-engine/src/plan
 | **MotherDuck / Snowflake auth fails** | Token expired, or PAT lacks the role you're trying to use | Regenerate in the vendor UI; paste into the Connection in Duckle |
 | **Postgres `ATTACH` says "could not connect"** | Local SSL mode mismatch | Connection -> Advanced -> set SSL mode to `disable` for localhost / `require` for production |
 | **AI tests skip with no failure** | `DUCKLE_DUCKDB_BIN` isn't set | `export DUCKLE_DUCKDB_BIN=/path/to/duckdb` before `cargo test` |
+| **TLS "UnknownIssuer" / "invalid peer certificate" behind a corporate proxy** | A TLS-inspecting proxy (Zscaler, Netskope, ...) re-signs traffic with its own CA | Duckle trusts your OS certificate store on top of its bundled roots, so the proxy CA in the Windows / macOS / Linux store is honoured automatically. If the CA isn't in the store, point `DUCKLE_CA_CERT` at a PEM file containing it. Note: DuckDB's own extension fetch (`extensions.duckdb.org`) and cloud reads (S3 / GCS / Azure) run inside the DuckDB engine with its own TLS, so also allow / exempt `extensions.duckdb.org` from inspection. |
 
 If you see something not listed, please [open an issue](https://github.com/SouravRoy-ETL/duckle/issues) with steps to reproduce + the relevant log line.
 

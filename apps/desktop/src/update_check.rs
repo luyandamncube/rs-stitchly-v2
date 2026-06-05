@@ -111,7 +111,8 @@ pub fn check() -> UpdateInfo {
     // List releases (newest first) rather than /releases/latest so prereleases
     // and same-tag re-rolls are both visible.
     let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=10");
-    let resp = ureq::get(&url)
+    let resp = duckle_duckdb_engine::tls::http_agent()
+        .get(&url)
         .set("User-Agent", "duckle-app")
         .set("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(8))

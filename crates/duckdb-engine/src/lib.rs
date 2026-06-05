@@ -25,6 +25,7 @@ use thiserror::Error;
 
 pub mod history;
 pub mod plan;
+pub mod tls;
 mod connectors;
 mod run_log;
 mod util;

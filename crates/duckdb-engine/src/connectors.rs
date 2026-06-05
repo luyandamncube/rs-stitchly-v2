@@ -140,7 +140,7 @@ impl DuckdbEngine {
         // Reuse one Agent across all dispatches; in row mode this loops once
         // per row against the same host, so connection pooling avoids a fresh
         // handshake per row.
-        let agent = ureq::AgentBuilder::new().build();
+        let agent = crate::tls::http_agent();
         let dispatch = |body: String, default_ct: &str| -> Result<(), EngineError> {
             let mut req = agent.request(&method, &spec.url);
             let has_ct = spec
@@ -338,7 +338,7 @@ impl DuckdbEngine {
             }
             let body = serde_json::to_string(&JsonValue::Object(body_obj))
                 .unwrap_or_else(|_| "{}".into());
-            let mut req = ureq::post(&url)
+            let mut req = crate::tls::http_agent().post(&url)
                 .set("Authorization", &auth_header)
                 .set("Content-Type", "application/json")
                 .set("Accept", "application/json");
@@ -1713,7 +1713,7 @@ impl DuckdbEngine {
             if let Some(off) = &next_offset {
                 body.insert("offset".into(), off.clone());
             }
-            let mut req = ureq::post(&url)
+            let mut req = crate::tls::http_agent().post(&url)
                 .set("Content-Type", "application/json")
                 .set("Accept", "application/json");
             if !spec.api_key.is_empty() {
@@ -1812,7 +1812,7 @@ impl DuckdbEngine {
             if let Some(a) = &after {
                 url.push_str(&format!("&after={}", urlencode_simple(a)));
             }
-            let mut req = ureq::get(&url).set("Accept", "application/json");
+            let mut req = crate::tls::http_agent().get(&url).set("Accept", "application/json");
             if !spec.api_key.is_empty() {
                 req = req.set("Authorization", &format!("Bearer {}", spec.api_key));
             }
@@ -1924,7 +1924,7 @@ impl DuckdbEngine {
             }
             body.insert("limit".into(), JsonValue::from(spec.page_size));
             body.insert("offset".into(), JsonValue::from(offset));
-            let mut req = ureq::post(&url)
+            let mut req = crate::tls::http_agent().post(&url)
                 .set("Content-Type", "application/json")
                 .set("Accept", "application/json");
             if !spec.api_key.is_empty() {
@@ -2734,7 +2734,7 @@ impl DuckdbEngine {
                 "model": spec.model,
                 "input": inputs,
             });
-            let resp = ureq::post(&endpoint)
+            let resp = crate::tls::http_agent().post(&endpoint)
                 .set("Authorization", &format!("Bearer {}", spec.api_key))
                 .set("Content-Type", "application/json")
                 .send_string(&body.to_string());
@@ -2828,7 +2828,7 @@ impl DuckdbEngine {
                 &spec.secret_access_key,
                 spec.session_token.as_deref(),
             );
-            let mut req = ureq::post(&endpoint)
+            let mut req = crate::tls::http_agent().post(&endpoint)
                 .set("Host", &host)
                 .set("Content-Type", "application/x-amz-json-1.0")
                 .set("X-Amz-Date", &datetime)
@@ -3010,7 +3010,7 @@ impl DuckdbEngine {
                 &spec.secret_access_key,
                 spec.session_token.as_deref(),
             );
-            let mut req = ureq::post(&endpoint)
+            let mut req = crate::tls::http_agent().post(&endpoint)
                 .set("Host", &host)
                 .set("Content-Type", "application/x-amz-json-1.0")
                 .set("X-Amz-Date", &datetime)
@@ -3514,7 +3514,7 @@ impl DuckdbEngine {
                     {"role": "user", "content": text},
                 ],
             });
-            let resp = ureq::post(&endpoint)
+            let resp = crate::tls::http_agent().post(&endpoint)
                 .set("Authorization", &format!("Bearer {}", spec.api_key))
                 .set("Content-Type", "application/json")
                 .send_string(&body.to_string());
@@ -3602,7 +3602,7 @@ impl DuckdbEngine {
                 "messages": messages,
                 "temperature": spec.temperature,
             });
-            let resp = ureq::post(&endpoint)
+            let resp = crate::tls::http_agent().post(&endpoint)
                 .set("Authorization", &format!("Bearer {}", spec.api_key))
                 .set("Content-Type", "application/json")
                 .send_string(&body.to_string());
@@ -4086,7 +4086,7 @@ impl DuckdbEngine {
                 })
                 .collect();
             let body = serde_json::json!({ "messages": messages });
-            let resp = ureq::post(&url)
+            let resp = crate::tls::http_agent().post(&url)
                 .set("Content-Type", "application/json")
                 .set("Authorization", &format!("Bearer {}", spec.access_token))
                 .send_string(&serde_json::to_string(&body).unwrap_or_default());
@@ -4131,7 +4131,7 @@ impl DuckdbEngine {
             spec.project, spec.subscription
         );
         let body = serde_json::json!({ "maxMessages": spec.max_messages });
-        let resp = ureq::post(&pull_url)
+        let resp = crate::tls::http_agent().post(&pull_url)
             .set("Content-Type", "application/json")
             .set("Authorization", &format!("Bearer {}", spec.access_token))
             .send_string(&serde_json::to_string(&body).unwrap_or_default());
@@ -4192,7 +4192,7 @@ impl DuckdbEngine {
                 spec.project, spec.subscription
             );
             let ack_body = serde_json::json!({ "ackIds": ack_ids });
-            let _ = ureq::post(&ack_url)
+            let _ = crate::tls::http_agent().post(&ack_url)
                 .set("Content-Type", "application/json")
                 .set("Authorization", &format!("Bearer {}", spec.access_token))
                 .send_string(&serde_json::to_string(&ack_body).unwrap_or_default());
@@ -4725,7 +4725,7 @@ impl DuckdbEngine {
                 body.push_str(&line);
                 body.push('\n');
             }
-            let mut req = ureq::post(&base)
+            let mut req = crate::tls::http_agent().post(&base)
                 .set("Content-Type", "application/x-ndjson");
             if let Some(u) = &spec.user {
                 req = req.set("X-ClickHouse-User", u);
@@ -4776,7 +4776,7 @@ impl DuckdbEngine {
         } else {
             format!("{} FORMAT JSON", spec.query.trim())
         };
-        let mut req = ureq::post(&url).set("Content-Type", "text/plain");
+        let mut req = crate::tls::http_agent().post(&url).set("Content-Type", "text/plain");
         if let Some(u) = &spec.user {
             req = req.set("X-ClickHouse-User", u);
         }
@@ -5025,7 +5025,7 @@ impl DuckdbEngine {
         };
         let post = |body: &JsonValue| -> Result<JsonValue, EngineError> {
             let body_str = serde_json::to_string(body).unwrap_or_else(|_| "{}".into());
-            let mut req = ureq::post(&url)
+            let mut req = crate::tls::http_agent().post(&url)
                 .set("Content-Type", "application/json")
                 .set("Accept", "application/json");
             if let Some(key) = &spec.api_key {
@@ -5186,7 +5186,7 @@ impl DuckdbEngine {
         // One Agent for the whole pagination walk so keep-alive connections
         // are reused across pages instead of a fresh TCP+TLS handshake each
         // request (ureq::request uses a throwaway agent per call).
-        let agent = ureq::AgentBuilder::new().build();
+        let agent = crate::tls::http_agent();
         loop {
             self.check_cancelled()?;
             // Build request
@@ -6087,7 +6087,7 @@ impl DuckdbEngine {
             );
             let body = serde_json::to_string(&JsonValue::Object(body_obj))
                 .unwrap_or_else(|_| "{}".into());
-            let req = ureq::post(&url)
+            let req = crate::tls::http_agent().post(&url)
                 .set("Authorization", &format!("Bearer {}", spec.pat))
                 .set("Content-Type", "application/json")
                 .set("Accept", "application/json");

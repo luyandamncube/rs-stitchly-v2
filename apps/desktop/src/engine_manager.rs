@@ -303,6 +303,9 @@ fn install_spec<F: FnMut(InstallProgress)>(
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("duckle")
+        // Trust the OS store (+ optional DUCKLE_CA_CERT) on top of the bundled
+        // roots so the engine download works behind a TLS-inspecting proxy.
+        .use_preconfigured_tls(duckle_duckdb_engine::tls::build_client_config())
         .build()
         .map_err(|e| e.to_string())?;
     let mut resp = client.get(&url).send().map_err(|e| e.to_string())?;
@@ -490,6 +493,8 @@ fn install_llama_model<F: FnMut(InstallProgress)>(
         .user_agent("duckle")
         // No global timeout - the model is over a GB on home internet.
         .timeout(None)
+        // Same merged trust store as the engine download (OS + bundled roots).
+        .use_preconfigured_tls(duckle_duckdb_engine::tls::build_client_config())
         .build()
         .map_err(|e| e.to_string())?;
     let mut resp = client.get(&url).send().map_err(|e| e.to_string())?;

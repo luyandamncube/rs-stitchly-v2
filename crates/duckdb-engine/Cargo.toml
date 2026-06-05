@@ -20,6 +20,16 @@ duckle-plugin-sdk = { workspace = true }
 # vs ~100kb for reqwest + tokio, and it matches the per-stage CLI
 # shell-out model we already use (one synchronous round-trip).
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+# TLS trust roots for the HTTP clients above. We build one rustls config
+# that unions the bundled Mozilla roots (webpki-roots, the prior default)
+# with the OS native store (rustls-native-certs) so connections succeed
+# behind a TLS-inspecting corporate proxy whose CA lives only in the OS
+# store. Pinned to the same versions/provider ureq already resolves (ring),
+# so this adds no new crypto backend and no extra build cost. See src/tls.rs.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "0.26"
+rustls-native-certs = "0.7"
+rustls-pemfile = "2"
 # Snowflake JWT RS256 auth path. Reads a PEM-encoded private key,
 # derives the public-key fingerprint, and signs the standard
 # Snowflake claims (iss / sub / iat / exp). PAT bearer auth is also
