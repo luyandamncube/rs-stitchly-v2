@@ -32,7 +32,7 @@
   <text x="58" y="178" font-family="'Segoe UI', system-ui, Arial, sans-serif" font-size="24" font-weight="700" fill="#cfe0ff">Clean data in. Smart data out.</text>
   <text x="58" y="212" font-family="'Segoe UI', system-ui, Arial, sans-serif" font-size="15.5" font-weight="400" fill="#8290a8">Visual, local-first ETL. Read files, databases, and the cloud,</text>
   <text x="58" y="234" font-family="'Segoe UI', system-ui, Arial, sans-serif" font-size="15.5" font-weight="400" fill="#8290a8">reshape with 40+ transforms, land clean data anywhere.</text>
-  <text x="58" y="262" font-family="'Segoe UI', system-ui, Arial, sans-serif" font-size="13" font-weight="600" fill="#5f6b82">~9 MB desktop app . no servers . runs on DuckDB</text>
+  <text x="58" y="262" font-family="'Segoe UI', system-ui, Arial, sans-serif" font-size="13" font-weight="600" fill="#5f6b82">~65 MB desktop app . no servers . runs on DuckDB</text>
 
   <!-- flow on the right: Sources -> Duckle -> Sinks -->
   <g font-family="'Segoe UI', system-ui, Arial, sans-serif">

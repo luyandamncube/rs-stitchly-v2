@@ -4,7 +4,7 @@
 
 <h3>The local-first data studio with a built-in AI assistant.</h3>
 
-<p><b>Duckle</b> is an open-source desktop ETL / ELT studio. Drag a pipeline onto the canvas, describe what you need in plain English to <b>Duckie</b> (the on-device AI assistant), and execute at native speed through DuckDB. 290+ connectors, 50+ transforms, a built-in scheduler, and a chat assistant that runs entirely on your CPU. Ships as a ~30 MB desktop app. No cloud, no servers, no lock-in.</p>
+<p><b>Duckle</b> is an open-source desktop ETL / ELT studio. Drag a pipeline onto the canvas, describe what you need in plain English to <b>Duckie</b> (the on-device AI assistant), and execute at native speed through DuckDB. 290+ connectors, 50+ transforms, a built-in scheduler, and a chat assistant that runs entirely on your CPU. Ships as a ~65 MB single-file desktop app. No cloud, no servers, no lock-in.</p>
 
 <p>
 <img alt="status" src="https://img.shields.io/badge/status-beta-3b82f6"/>
@@ -48,7 +48,7 @@
 - [Workspace + Git flow](#workspace-and-git-flow)
 - [Schedules](#schedules-and-triggers)
 - [Server deployment](#server-deployment-build-pipeline)
-- [MCP server (LLM integration)](#mcp-server-connect-any-llm-to-duckle)
+- [MCP server (Claude / LLM integration)](#mcp-server-connect-claude-or-any-llm-to-duckle)
 - [Connection management](#connection-management)
 - [Context variables](#context-variables)
 
@@ -102,7 +102,7 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 1. **An AI assistant that ships in the box.** Describe the pipeline you want in English; Duckie writes the JSON and drops it onto the canvas. The model runs locally - no API key, no telemetry, no cloud round-trip.
 2. **290+ connectors at install time.** Files, lakehouses, SQL databases, warehouses, NoSQL, vector DBs, streaming brokers, SaaS REST/GraphQL APIs, even FTP and IMAP - working today, not coming-soon.
-3. **A self-contained binary you can audit.** ~30 MB download. Engines install on first launch. Workspaces are plain files in a folder you choose. Diff them, branch them, ship them.
+3. **A self-contained binary you can audit.** ~65 MB download. Engines install on first launch. Workspaces are plain files in a folder you choose. Diff them, branch them, ship them.
 
 <div align="center">
 <img src="docs/assets/flow.svg" alt="Sources flow through 50+ transforms into files, databases, object storage, vector stores, and AI" width="100%"/>
@@ -136,7 +136,7 @@ The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Code
 |---|---|
 | **Visual, never opaque** | The canvas compiles to SQL you can read, and every node has a live preview tab. No black box. |
 | **Local-first AI** | An assistant that runs on your laptop without an API key. Your prompts, your data, your machine. |
-| **Compact binary, no bundled DB** | ~30 MB app. DuckDB downloads on first launch with a guided step. AI engine is opt-in. |
+| **Single-file binary, no bundled DB** | ~65 MB app (it embeds the headless runner + MCP server). DuckDB downloads on first launch with a guided step. AI engine is opt-in. |
 | **Native speed** | Execution runs through DuckDB: vectorized, columnar, local. A clean-and-export job that crawls in a spreadsheet finishes in milliseconds. |
 | **Git-friendly by design** | Pipelines, connections, contexts, and routines persist as plain files in a folder you pick. Diff them, branch them, review them. |
 | **290+ connectors that work** | Files, databases, warehouses, lakehouses, object stores, SaaS APIs, NoSQL, streaming brokers, vector DBs, FTP, IMAP, SMTP. Each is covered by tests. |
@@ -399,7 +399,7 @@ Pick the binary for your OS from the [latest release](https://github.com/SouravR
 
 The single-file binary above is all you need for **Build Pipeline** too: the headless runner is embedded into the app at build time, and exporting a pipeline produces ONE self-contained executable (the engine, the DuckDB CLI, any needed extensions, and the resolved pipeline are all inside that one file). Copy that single file to your server and run or schedule it - no separate runner download required.
 
-The binary is ~30 MB (Linux ~30, macOS ~24, Windows ~28). On first launch you'll be guided through downloading two engines into your app-data directory:
+The binary is ~55-78 MB depending on platform (it embeds the headless runner and the bundled MCP server). On first launch you'll be guided through downloading two engines into your app-data directory:
 
 | Engine | Size | Required? | What it powers |
 |---|---|---|---|
@@ -719,18 +719,39 @@ duckle-runner --pipeline /path/to/pipeline.json [--workspace /path/to/workspace]
 
 ---
 
-## MCP server (connect any LLM to Duckle)
+## MCP server (connect Claude or any LLM to Duckle)
 
-`duckle-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io)
-server, so any MCP client - Claude Desktop, Claude Code, or any other LLM agent -
-can drive Duckle directly. It speaks JSON-RPC over stdio and reuses the DuckDB
-engine in-process (no GUI, no Node runtime).
+<p align="center"><img src="docs/assets/mcp-claude-banner.svg" alt="Connect Duckle to Claude via MCP" width="92%"/></p>
 
-The LLM can: browse the full component catalog and per-component property
-schemas, **generate a pipeline straight into a working directory you choose**,
-validate it (compile without running), run it headlessly, read existing
-pipelines and their run logs, build a standalone artifact, and manage saved
-connections.
+Duckle ships its own [Model Context Protocol](https://modelcontextprotocol.io)
+server, so Claude (or any MCP client - Claude Desktop, Claude Code, Cursor, or
+any other LLM agent) can drive Duckle directly: browse the full component catalog
+and per-component property schemas, **generate a pipeline straight into a working
+directory you choose**, validate it (compile without running), run it headlessly,
+read existing pipelines and their run logs, build a standalone artifact, and
+manage saved connections.
+
+### Connect in one click (recommended)
+
+The MCP server is **bundled inside the app** - there is nothing extra to install.
+In the designer, click **Connect to Claude** in the top bar to open the connector
+popup, then pick your client:
+
+- **Connect to Claude Code** - registers the `duckle` server for you (runs
+  `claude mcp add` under the hood).
+- **Add to Claude Desktop** / **Add to Cursor** - writes the `duckle` entry into
+  that client's config, with the resolved engine paths filled in (both the
+  Microsoft Store / MSIX and standalone Claude Desktop layouts are handled).
+- Or copy the command / config for any other MCP client.
+
+Restart the AI client, then try *"Use duckle to list the available components"*
+to confirm the connection.
+
+### Manual / headless
+
+For a build-from-source or server setup, point any client at the `duckle-mcp`
+binary directly. It speaks JSON-RPC over stdio and reuses the DuckDB engine
+in-process (no GUI, no Node runtime).
 
 ```bash
 cargo build -p duckle-mcp --release      # target/release/duckle-mcp
@@ -942,7 +963,7 @@ No - Duckle downloads it for you on first launch. The download is ~30 MB and inc
 <details>
 <summary><b>How big is the binary, exactly?</b></summary>
 
-About 27-30 MB depending on platform (Linux 30 MB, macOS 24 MB, Windows 28 MB). The engines aren't statically linked - DuckDB (~50 MB with extensions) and the Duckie LLM (~1.1 GB for the Qwen GGUF) both download on first launch with a guided installer into your app-data folder. So the actual app download stays small, updates stay fast, and engines update independently.
+About 55-78 MB depending on platform (macOS ~54-67, Windows ~59-68, Linux ~66-78); it embeds the headless runner and the MCP server. The engines aren't statically linked - DuckDB (~50 MB with extensions) and the Duckie LLM (~1.1 GB for the Qwen GGUF) both download on first launch with a guided installer into your app-data folder, so they update independently of the app.
 
 </details>
 
