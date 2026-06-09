@@ -673,7 +673,7 @@ For headless / always-on schedules that run when Duckle is closed, build the pip
 
 ## Server deployment (Build Pipeline)
 
-The in-app scheduler runs only while Duckle is open. To run a pipeline on a server with no desktop app, **Build Pipeline** turns it into ONE self-contained executable - the equivalent of a Talend "Build Job".
+The in-app scheduler runs only while Duckle is open. To run a pipeline on a server with no desktop app, **Build Pipeline** turns it into ONE self-contained executable - the equivalent of a standalone "Job".
 
 Right-click a pipeline (in the project tree or on the canvas) and choose **Build Pipeline**. The output is a single file named after the pipeline (`orders_etl.exe` on Windows, `orders_etl` on macOS / Linux) that embeds everything it needs:
 
