@@ -1921,7 +1921,12 @@ impl JsonLinesWriter {
                 .replace('\\', "/")
                 .replace('\'', "''")
         );
-        apply_duckdb_sql(bin, db, &sql)
+        let r = apply_duckdb_sql(bin, db, &sql);
+        // Clean up the temp NDJSON file whether the load succeeded or failed
+        // (DuckDB has already read it by now); otherwise duckle-rest-*.json
+        // accumulate in the temp dir forever.
+        let _ = std::fs::remove_file(&self.path);
+        r
     }
 
     /// Like finalize_into_table, but reads every JSON field as VARCHAR and

@@ -294,6 +294,11 @@ fn is_date_like(s: &str) -> bool {
     if s.len() != 10 {
         return false;
     }
+    // A real date is pure ASCII; bail before the byte-index slices below, which
+    // would panic on a multibyte UTF-8 char straddling a slice boundary.
+    if !s.is_ascii() {
+        return false;
+    }
     let bytes = s.as_bytes();
     bytes[4] == b'-'
         && bytes[7] == b'-'
@@ -305,6 +310,11 @@ fn is_date_like(s: &str) -> bool {
 fn is_timestamp_like(s: &str) -> bool {
     // YYYY-MM-DD HH:MM[:SS][.fff][Z|+HH:MM]
     if s.len() < 16 {
+        return false;
+    }
+    // ASCII guard: the `&s[..10]` / `&s[11..]` byte slices below would panic on
+    // a multibyte char at the boundary, and a real timestamp is ASCII anyway.
+    if !s.is_ascii() {
         return false;
     }
     if !is_date_like(&s[..10]) {

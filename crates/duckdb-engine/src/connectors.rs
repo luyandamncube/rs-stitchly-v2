@@ -505,9 +505,10 @@ impl DuckdbEngine {
                 cols.len()
             )));
         }
+        let oq = |id: &str| format!("\"{}\"", id.replace('"', "\"\""));
         let qualified = match &spec.schema {
-            Some(s) => format!("\"{}\".\"{}\"", s, spec.table),
-            None => format!("\"{}\"", spec.table),
+            Some(s) => format!("{}.{}", oq(s), oq(&spec.table)),
+            None => oq(&spec.table),
         };
         let cols_list = cols
             .iter()
@@ -4660,7 +4661,7 @@ impl DuckdbEngine {
         let in_len: u32 = input.len() as u32;
         memory
             .data_mut(&mut *store)
-            .get_mut(in_ptr as usize..(in_ptr + in_len) as usize)
+            .get_mut(in_ptr as usize..(in_ptr as usize + in_len as usize))
             .ok_or_else(|| EngineError::Query("wasm: input doesn't fit in memory".into()))?
             .copy_from_slice(input.as_bytes());
         let packed = transform
@@ -4669,8 +4670,13 @@ impl DuckdbEngine {
         let out_ptr = ((packed >> 32) & 0xFFFFFFFF) as u32;
         let out_len = (packed & 0xFFFFFFFF) as u32;
         let mem_data = memory.data(&*store);
+        // Widen to usize before adding: out_ptr/out_len are module-controlled,
+        // so `out_ptr + out_len` as u32 would overflow-panic in debug builds.
+        let out_end = (out_ptr as usize)
+            .checked_add(out_len as usize)
+            .ok_or_else(|| EngineError::Query("wasm: out ptr+len overflow".into()))?;
         let out_slice = mem_data
-            .get(out_ptr as usize..(out_ptr + out_len) as usize)
+            .get(out_ptr as usize..out_end)
             .ok_or_else(|| {
                 EngineError::Query(format!(
                     "wasm: out (ptr={}, len={}) out of memory bounds (mem_size={})",

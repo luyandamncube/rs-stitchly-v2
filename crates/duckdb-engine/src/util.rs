@@ -718,6 +718,15 @@ pub(crate) fn read_http_request(
     }
     // Body: any bytes we've already read past the header split + more
     // until we have content_length bytes total.
+    // Cap the declared body size so an attacker-controlled (or lying)
+    // Content-Length can't grow `body` unboundedly in RAM.
+    const MAX_WEBHOOK_BODY: usize = 16 * 1024 * 1024;
+    if content_length > MAX_WEBHOOK_BODY {
+        return Err(format!(
+            "request body too large ({} bytes; max {})",
+            content_length, MAX_WEBHOOK_BODY
+        ));
+    }
     let mut body: Vec<u8> = buf[split_at + 4..].to_vec();
     // Only read-to-length + truncate when Content-Length was declared. Without
     // it, keep whatever body bytes were already buffered rather than truncating
