@@ -233,9 +233,15 @@ fn t_run_pipeline(args: &Value) -> Result<Value, String> {
     let duckdb = resolve_duckdb(arg_str(args, "duckdb"))
         .ok_or("no DuckDB binary found; set DUCKLE_DUCKDB_BIN or pass 'duckdb'")?;
     std::env::set_var("DUCKLE_DUCKDB_BIN", &duckdb);
+    // This is a long-lived stdio server; set the workspace env deterministically
+    // every call so one run_pipeline doesn't inherit a previous call's workspace
+    // (which would write logs / resolve child jobs against the wrong folder).
     if let Some(ws) = arg_str(args, "workspace") {
         std::env::set_var("DUCKLE_WORKSPACE", ws);
         std::env::set_var("DUCKLE_LOG_DIR", std::path::Path::new(ws).join("logs"));
+    } else {
+        std::env::remove_var("DUCKLE_WORKSPACE");
+        std::env::remove_var("DUCKLE_LOG_DIR");
     }
 
     let engine = DuckdbEngine::new(duckdb);

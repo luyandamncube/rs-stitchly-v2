@@ -198,6 +198,13 @@ impl Scheduler {
         compute_next_run(&mut schedule);
         let mut g = self.inner.lock().expect("scheduler poisoned");
         if let Some(idx) = g.schedules.iter().position(|s| s.id == schedule.id) {
+            // Upsert carries config only; preserve the existing run-history
+            // fields so a partial payload doesn't wipe last_run_* to null.
+            let prev = g.schedules[idx].clone();
+            schedule.last_run_at = prev.last_run_at;
+            schedule.last_run_status = prev.last_run_status;
+            schedule.last_run_duration_ms = prev.last_run_duration_ms;
+            schedule.last_run_error = prev.last_run_error;
             g.schedules[idx] = schedule.clone();
         } else {
             g.schedules.push(schedule.clone());
