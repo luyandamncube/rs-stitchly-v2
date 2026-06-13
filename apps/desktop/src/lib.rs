@@ -188,6 +188,12 @@ pub struct InspectionPayload {
 static DUCKDB_BIN: OnceLock<PathBuf> = OnceLock::new();
 static DUCKDB_ENGINE: OnceLock<DuckdbEngine> = OnceLock::new();
 
+/// The engine driving the current interactive run, so `cancel_pipeline` can
+/// stop THAT run specifically. Each run uses a fresh per-run cancel flag (via
+/// `for_new_run`), so cancelling the interactive run never touches concurrent
+/// scheduler runs, and a finished run can't be cancelled by a stale request.
+static CURRENT_RUN: std::sync::Mutex<Option<DuckdbEngine>> = std::sync::Mutex::new(None);
+
 /// The shared engine, pointed at the downloaded DuckDB CLI. Cheap to
 /// build (just holds a path); cached so the cancel flag is shared
 /// between a run and a cancel.
@@ -272,15 +278,17 @@ async fn run_pipeline(
     pipeline_name: Option<String>,
     workspace_path: Option<String>,
 ) -> Result<RunResult, String> {
-    let engine = engine()?;
+    let engine = engine()?.for_new_run();
+    *CURRENT_RUN.lock().unwrap_or_else(|p| p.into_inner()) = Some(engine.clone());
     let name = pipeline_name.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let joined = tokio::task::spawn_blocking(move || {
         engine.execute_pipeline_with_events(&pipeline, None, name.as_deref(), |evt| {
             let _ = on_event.send(evt);
         })
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    *CURRENT_RUN.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    let result = joined.map_err(|e| e.to_string())?;
     record_history(&pipeline_id, &workspace_path, &result, "manual");
     Ok(result)
 }
@@ -311,10 +319,11 @@ async fn run_pipeline_partial(
     pipeline_name: Option<String>,
     workspace_path: Option<String>,
 ) -> Result<RunResult, String> {
-    let engine = engine()?;
+    let engine = engine()?.for_new_run();
+    *CURRENT_RUN.lock().unwrap_or_else(|p| p.into_inner()) = Some(engine.clone());
     let target = target_node_id;
     let name = pipeline_name.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let joined = tokio::task::spawn_blocking(move || {
         engine.execute_pipeline_with_events(
             &pipeline,
             Some(target.as_str()),
@@ -324,8 +333,9 @@ async fn run_pipeline_partial(
             },
         )
     })
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    *CURRENT_RUN.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    let result = joined.map_err(|e| e.to_string())?;
     record_history(&pipeline_id, &workspace_path, &result, "partial");
     Ok(result)
 }
@@ -406,8 +416,11 @@ fn watermark_clear(
 /// skipped.
 #[tauri::command]
 fn cancel_pipeline() -> Result<(), String> {
-    let engine = engine()?;
-    engine.request_cancel();
+    // Cancel the active interactive run's own flag (not a shared global), so we
+    // don't also stop concurrent scheduler runs.
+    if let Some(e) = CURRENT_RUN.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        e.request_cancel();
+    }
     Ok(())
 }
 

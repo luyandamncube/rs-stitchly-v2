@@ -241,7 +241,9 @@ impl Scheduler {
         let workspace =
             workspace.ok_or_else(|| "No workspace set for the scheduler".to_string())?;
         let pipeline = load_pipeline(&workspace, &pipeline_id)?;
-        let engine = self.engine.clone();
+        // A fresh per-run cancel scope so concurrent scheduled runs (and the
+        // interactive run) don't share or reset each other's cancellation.
+        let engine = self.engine.for_new_run();
         let started = Utc::now();
         // Log scheduled runs under the pipeline id (the scheduler has no
         // friendly name handy) so they still land in the per-pipeline log.

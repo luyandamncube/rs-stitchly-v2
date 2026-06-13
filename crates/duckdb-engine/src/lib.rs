@@ -115,6 +115,19 @@ impl DuckdbEngine {
         }
     }
 
+    /// A clone of this engine carrying a FRESH, independent cancel flag, for a
+    /// new top-level run. Each run owns its own cancellation scope: cancelling
+    /// (or a stale cancel from) one run must not stop another concurrent run,
+    /// and a nested sub-pipeline shares THIS run's flag (it clones this engine)
+    /// rather than resetting it. Use this at every top-level entry point
+    /// (interactive run, per-schedule run) so runs don't share one flag.
+    pub fn for_new_run(&self) -> DuckdbEngine {
+        DuckdbEngine {
+            bin: self.bin.clone(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn binary(&self) -> &Path {
         &self.bin
     }
@@ -349,7 +362,10 @@ impl DuckdbEngine {
         F: FnMut(PipelineEvent),
     {
         let total_start = Instant::now();
-        self.clear_cancel();
+        // NOTE: do NOT clear the cancel flag here. Each top-level run is given a
+        // fresh flag via for_new_run(); clearing on every entry would let a
+        // nested sub-pipeline run (ctl.iterate/foreach/runjob/parallelize) wipe
+        // a cancel the user requested mid-loop.
 
         if !self.bin.exists() {
             return RunResult::failed(
@@ -3359,8 +3375,26 @@ mod tests {
     use super::{
         aws_sigv4_sign, chunk_text, cosine_similarity, glob_match, mssql_numeric_to_string,
         parse_link_next, pii_patterns, read_marker, render_prompt_template, secret_placeholder,
-        unwrap_dynamodb_attrs, MarkerState,
+        unwrap_dynamodb_attrs, DuckdbEngine, MarkerState,
     };
+    use std::path::PathBuf;
+
+    #[test]
+    fn for_new_run_isolates_cancel_but_clones_share_within_a_run() {
+        let base = DuckdbEngine::new(PathBuf::from("duckdb"));
+        // A fresh run scope: cancelling it must NOT affect a separate run.
+        let run_a = base.for_new_run();
+        let run_b = base.for_new_run();
+        run_a.request_cancel();
+        assert!(run_a.check_cancelled().is_err(), "run A should be cancelled");
+        assert!(run_b.check_cancelled().is_ok(), "run B must be independent of run A");
+        assert!(base.check_cancelled().is_ok(), "the base engine is unaffected");
+        // A plain clone (how sub-pipelines / parallelize branches get an engine)
+        // shares the SAME run's flag, so a cancel propagates to children.
+        let child = run_b.clone();
+        run_b.request_cancel();
+        assert!(child.check_cancelled().is_err(), "a clone shares the run's flag");
+    }
 
     #[test]
     fn secret_placeholder_derives_env_style_name() {
