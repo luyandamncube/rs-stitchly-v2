@@ -240,7 +240,7 @@ a.card:hover { text-decoration: none; }
 .chip { font-size: .8rem; padding: 4px 11px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--border); color: var(--ink-2); white-space: nowrap; }
 
 /* ---- ecosystem ---- */
-.eco { background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius); padding: 48px; text-align: center; box-shadow: var(--shadow-sm); }
+.eco { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 56px 48px; text-align: center; box-shadow: var(--shadow-sm); }
 .eco img.mark { width: 54px; height: 54px; margin: 0 auto 14px; }
 .eco blockquote { max-width: 760px; margin: 16px auto 0; color: var(--ink-3); font-size: .96rem; }
 .eco .row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 24px; }
@@ -255,7 +255,7 @@ a.card:hover { text-decoration: none; }
 .cta { text-align: center; border-radius: var(--radius); padding: 64px 28px; background: linear-gradient(135deg, rgba(255, 241, 0, .2), rgba(244, 180, 0, .24)); border: 1px solid var(--border-2); }
 
 /* ---- footer ---- */
-.footer { border-top: 1px solid var(--border); background: var(--bg-soft); padding: 56px 0 32px; margin-top: 40px; }
+.footer { border-top: 1px solid var(--border); background: var(--bg-soft); padding: 56px 0 32px; margin-top: 0; }
 .footer-grid { display: grid; grid-template-columns: 1.7fr repeat(4, 1fr); gap: 28px; }
 .footer h4 { font-size: .76rem; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-3); margin-bottom: 12px; }
 .footer a { display: block; color: var(--ink-2); font-size: .92rem; padding: 4px 0; }
@@ -433,6 +433,8 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
 .hg-node { width: 60px; height: 60px; border-radius: 50%; z-index: 3; }
 .hg-node img { width: 36px; height: 36px; background: #fff; border-radius: 50%; padding: 5px; box-sizing: border-box; }
 .hg-node.sm { width: 50px; height: 50px; } .hg-node.sm img { width: 32px; height: 32px; }
+.hg-group.eco .hg-tile { background: #1b1f2a; border: 1px solid rgba(255, 255, 255, .14); }
+.hg-group.eco .hg-tile img { background: transparent; padding: 4px; }
 .hg-float { animation: hgfloat 6.5s ease-in-out infinite; }
 .hg-float.d1 { animation-delay: -1.3s; } .hg-float.d2 { animation-delay: -2.6s; } .hg-float.d3 { animation-delay: -3.9s; } .hg-float.d4 { animation-delay: -5.2s; }
 @keyframes hgfloat { 0%,100% { transform: translate(-50%, -50%); } 50% { transform: translate(-50%, calc(-50% - 7px)); } }
