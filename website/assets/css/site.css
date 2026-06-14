@@ -436,3 +436,26 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
 @media (prefers-reduced-motion: reduce) { .hg-float { animation: none; } }
 @media (max-width: 980px) { .hgraph { max-width: 460px; } }
 @media (max-width: 760px) { .hero h1 { font-size: clamp(2.2rem, 9vw, 2.8rem); } .hgraph { max-width: 380px; margin-top: 8px; } }
+
+/* ============================================================
+   Schedule-a-demo modal (static booking via Google Calendar)
+   ============================================================ */
+.modal-overlay { position: fixed; inset: 0; z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(8, 10, 16, .55); backdrop-filter: blur(4px); animation: modalfade .15s ease; }
+.modal-overlay[hidden] { display: none; }
+@keyframes modalfade { from { opacity: 0; } to { opacity: 1; } }
+.modal { width: 100%; max-width: 480px; background: var(--panel); color: var(--ink); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow-lg); padding: 28px; position: relative; max-height: 92vh; overflow-y: auto; }
+.modal h3 { font-size: 1.4rem; margin-bottom: 6px; }
+.modal > p { font-size: .92rem; margin-bottom: 18px; }
+.modal-x { position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border-2); background: var(--panel); color: var(--ink-2); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.modal-x:hover { background: var(--bg-2); color: var(--ink); }
+.modal form { display: flex; flex-direction: column; gap: 13px; }
+.modal label { display: flex; flex-direction: column; gap: 6px; font-size: .82rem; font-weight: 650; color: var(--ink-2); }
+.modal .frow { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.modal input, .modal select, .modal textarea { font: inherit; font-size: .95rem; font-weight: 400; color: var(--ink); background: var(--bg); border: 1px solid var(--border-2); border-radius: 10px; padding: 10px 12px; width: 100%; }
+.modal input:focus, .modal select:focus, .modal textarea:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(244, 180, 0, .22); }
+.modal textarea { resize: vertical; }
+.modal form .btn { justify-content: center; margin-top: 4px; }
+.modal-alt { text-align: center; font-size: .85rem; color: var(--ink-3); margin: 2px 0 0; }
+.modal-ok { text-align: center; padding: 8px 0; }
+.modal-ok .chk { width: 54px; height: 54px; margin: 0 auto 14px; border-radius: 50%; background: rgba(46, 175, 255, .14); color: var(--maya); display: flex; align-items: center; justify-content: center; }
+@media (max-width: 520px) { .modal .frow { grid-template-columns: 1fr; } }
