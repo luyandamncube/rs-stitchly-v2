@@ -334,7 +334,9 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
 .mega b { display: block; color: var(--ink); font-size: .95rem; font-weight: 650; margin-bottom: 2px; }
 .mega span { display: block; font-size: .8rem; color: var(--ink-3); line-height: 1.4; }
 .mega.right { left: auto; right: 0; }
-.mega3 { min-width: 0; width: 840px; max-width: calc(100vw - 380px); grid-template-columns: repeat(3, 1fr); column-gap: 22px; }
+.nav-item:has(> .mega3) { position: static; }
+.mega3 { left: 50%; right: auto; transform: translateX(-50%) translateY(8px); min-width: 0; width: min(900px, calc(100vw - 48px)); max-width: none; grid-template-columns: repeat(3, 1fr); column-gap: 22px; }
+.nav-item:hover .mega3, .nav-item:focus-within .mega3 { transform: translateX(-50%) translateY(0); }
 .mega3 .mcol { display: flex; flex-direction: column; }
 
 /* dark stat band */
