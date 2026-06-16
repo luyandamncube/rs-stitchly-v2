@@ -37,8 +37,28 @@ jobs:
             gh release create "$tag" --draft --title "Duckle $tag"
           fi
 
-  build:
+  # Build the static Linux runner ONCE and hand it to the per-OS build jobs as a
+  # workflow artifact (NOT a release asset). Each desktop build embeds it so the
+  # shipped binary can cross-build a Linux pipeline file from any OS. No separate
+  # runner is published anywhere; the release page still carries only the desktop
+  # apps. The job fails loudly if the runner is not produced, so a release can
+  # never ship with the Linux target silently disabled.
+  build-linux-runner:
     needs: prepare-release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the static Linux duckle-runner (musl, in Docker)
+        run: bash scripts/build-runner-linux.sh
+      - name: Upload as a workflow artifact (not a release asset)
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckle-runner-linux-x64
+          path: apps/desktop/bin/duckle-runner-linux-x64
+          if-no-files-found: error
+
+  build:
+    needs: [prepare-release, build-linux-runner]
     strategy:
       fail-fast: false
       matrix:
@@ -127,6 +147,15 @@ jobs:
             cp "$base/duckle-runner" apps/desktop/bin/duckle-runner
             cp "$base/duckle-mcp" apps/desktop/bin/duckle-mcp
           fi
+
+      # Stage the prebuilt static Linux runner so build.rs embeds it into THIS
+      # desktop binary, enabling Build Pipeline -> Linux from any OS. This is a
+      # workflow artifact from the build-linux-runner job, never a release asset.
+      - name: Stage the embedded Linux runner
+        uses: actions/download-artifact@v4
+        with:
+          name: duckle-runner-linux-x64
+          path: apps/desktop/bin
 
       - name: Build raw Duckle binary
         shell: bash
