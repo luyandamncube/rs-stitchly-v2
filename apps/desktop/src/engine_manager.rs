@@ -155,6 +155,110 @@ fn asset_for(s: &EngineSpec) -> Option<String> {
     }
 }
 
+/// DuckDB CLI release asset name for an arbitrary OS/arch (not necessarily the
+/// host). Used to fetch a cross-target DuckDB when "Build Pipeline" targets a
+/// different OS than the one Duckle runs on.
+fn duckdb_asset(os: &str, arch: &str) -> Option<&'static str> {
+    Some(match (os, arch) {
+        ("windows", "x86_64") => "duckdb_cli-windows-amd64.zip",
+        ("windows", "aarch64") => "duckdb_cli-windows-arm64.zip",
+        ("linux", "x86_64") => "duckdb_cli-linux-amd64.zip",
+        ("linux", "aarch64") => "duckdb_cli-linux-aarch64.zip",
+        ("macos", _) => "duckdb_cli-osx-universal.zip",
+        _ => return None,
+    })
+}
+
+/// Resolve a DuckDB CLI binary for a DIFFERENT target than the host, used to
+/// assemble a cross-OS "Build Pipeline" artifact. Downloads the official
+/// DuckDB release zip (same pinned DUCKDB_VERSION as the host engine) for the
+/// requested os/arch and caches the extracted binary under
+/// `engines/duckdb-cross/<os>-<arch>/duckdb(.exe)`. Returns the cached path.
+///
+/// The downloaded binary is for the TARGET OS, so the host cannot execute it;
+/// it is only ever copied into the artifact payload. Its exec bit is set at
+/// run time when the artifact self-extracts on the target (see selfextract).
+pub fn ensure_cross_duckdb(app_data: &Path, os: &str, arch: &str) -> Result<PathBuf, String> {
+    let asset = duckdb_asset(os, arch)
+        .ok_or_else(|| format!("No DuckDB build for {}-{}", os, arch))?;
+    let bin_name = if os == "windows" { "duckdb.exe" } else { "duckdb" };
+    let dir = app_data
+        .join("engines")
+        .join("duckdb-cross")
+        .join(format!("{}-{}", os, arch));
+    let target = dir.join(bin_name);
+    if target.exists() {
+        return Ok(target);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let url = format!(
+        "https://github.com/{}/releases/download/v{}/{}",
+        DUCKDB.repo, DUCKDB_VERSION, asset
+    );
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("duckle")
+        .use_preconfigured_tls(duckle_duckdb_engine::tls::build_client_config())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Couldn't download DuckDB for {}-{} (HTTP {}). The release v{} may not exist yet.",
+            os,
+            arch,
+            resp.status().as_u16(),
+            DUCKDB_VERSION
+        ));
+    }
+    let expected = resp.content_length();
+    let bytes = resp.bytes().map_err(|e| e.to_string())?;
+    // Reject a truncated transfer before baking the binary into a shipped
+    // artifact: a short read here would otherwise produce a corrupt bundled
+    // duckdb that only fails on the target. A DuckDB CLI zip is multi-MB, so a
+    // tiny body also signals an error/redirect page slipped through.
+    if let Some(expected) = expected {
+        if (bytes.len() as u64) != expected {
+            return Err(format!(
+                "DuckDB download for {}-{} was truncated ({} of {} bytes)",
+                os,
+                arch,
+                bytes.len(),
+                expected
+            ));
+        }
+    }
+    if bytes.len() < 1_000_000 {
+        return Err(format!(
+            "DuckDB download for {}-{} is implausibly small ({} bytes); aborting",
+            os,
+            arch,
+            bytes.len()
+        ));
+    }
+    let reader = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
+    let mut extracted = false;
+    // DuckDB CLI zips ship a single self-contained binary named duckdb(.exe).
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        if file.is_dir() {
+            continue;
+        }
+        let name = file.name().to_string();
+        let leaf = name.rsplit('/').next().unwrap_or(&name);
+        if leaf.eq_ignore_ascii_case("duckdb") || leaf.eq_ignore_ascii_case("duckdb.exe") {
+            copy_atomic(&mut file, &target)?;
+            extracted = true;
+            break;
+        }
+    }
+    if !extracted {
+        return Err("DuckDB binary not found inside the downloaded archive".to_string());
+    }
+    Ok(target)
+}
+
 #[derive(Debug, Serialize)]
 pub struct EngineStatus {
     pub id: String,

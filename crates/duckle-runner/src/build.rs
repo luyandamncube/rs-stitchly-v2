@@ -41,6 +41,16 @@ struct BuildArgs {
     secrets: SecretMode,
     stub: Option<PathBuf>,
     duckdb: Option<PathBuf>,
+    /// Target OS for the artifact: windows|linux|macos. Defaults to the host
+    /// OS. When it differs from the host the caller must supply a --stub and
+    /// --duckdb for that OS; this only steers naming (duckdb vs duckdb.exe),
+    /// the manifest builtOsArch, and exec-bit handling.
+    target_os: Option<String>,
+    /// Target CPU arch for the artifact (e.g. x86_64). Defaults to the host
+    /// arch. For a cross build the caller pins it to the arch of the supplied
+    /// --stub so the manifest builtOsArch matches the shipped code rather than
+    /// the build host.
+    target_arch: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -66,6 +76,8 @@ fn parse_build_args() -> Result<BuildArgs, String> {
     let mut secrets = SecretMode::Env;
     let mut stub = None;
     let mut duckdb = None;
+    let mut target_os = None;
+    let mut target_arch = None;
 
     // Skip "duckle-runner" and "build".
     let mut it = std::env::args().skip(2);
@@ -85,6 +97,16 @@ fn parse_build_args() -> Result<BuildArgs, String> {
             }
             "--stub" => stub = Some(PathBuf::from(take("--stub")?)),
             "--duckdb" => duckdb = Some(PathBuf::from(take("--duckdb")?)),
+            "--target-os" => {
+                let v = take("--target-os")?;
+                match v.as_str() {
+                    "windows" | "linux" | "macos" => target_os = Some(v),
+                    other => {
+                        return Err(format!("--target-os must be windows|linux|macos, got {}", other))
+                    }
+                }
+            }
+            "--target-arch" => target_arch = Some(take("--target-arch")?),
             other => return Err(format!("unknown build argument: {}", other)),
         }
     }
@@ -97,6 +119,8 @@ fn parse_build_args() -> Result<BuildArgs, String> {
         secrets,
         stub,
         duckdb,
+        target_os,
+        target_arch,
     })
 }
 
@@ -467,8 +491,14 @@ pub fn run() -> Result<(), String> {
         .unwrap_or_else(|| args.pipeline_id.clone());
     let name = sanitize_name(&display);
 
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
+    // Naming + manifest + exec-bit handling key off the TARGET OS, which
+    // defaults to the host. Cross-target builds (e.g. a Linux artifact from a
+    // Windows host) pass --target-os plus a matching --stub and --duckdb; the
+    // duckdb version/platform probe below cannot run a foreign binary, so it
+    // degrades to None and the artifact relies on autoloaded extensions.
+    let os = args.target_os.as_deref().unwrap_or(std::env::consts::OS);
+    let arch = args.target_arch.as_deref().unwrap_or(std::env::consts::ARCH);
+    let is_cross = os != std::env::consts::OS;
     // Stage the artifact contents in a temp dir, then pack them into the
     // single-file payload. --out is the FINAL artifact path (written exactly).
     let staging = std::env::temp_dir().join(format!(
@@ -554,6 +584,22 @@ pub fn run() -> Result<(), String> {
         }
     } else {
         eprintln!("duckle-runner build: no duckdb binary found; bundle will need a duckdb on PATH");
+    }
+
+    // Cross-OS build: the foreign duckdb cannot be probed on this host, so the
+    // extension-prefetch block above is skipped entirely (duckdb_ver/plat are
+    // None). Warn explicitly when the pipeline needs extensions, so the operator
+    // knows the artifact is not fully offline for those connectors and the
+    // target must have network to autoload them at run time.
+    if is_cross {
+        let needed = needed_extensions(&doc);
+        if !needed.is_empty() {
+            let list = needed.iter().cloned().collect::<Vec<_>>().join(", ");
+            eprintln!(
+                "duckle-runner build: cross-OS build cannot prefetch extensions ({}); the target host must have network to autoload them at run time",
+                list
+            );
+        }
     }
 
     // --- pipeline/<name>.json (redacted, leak-guarded) ---

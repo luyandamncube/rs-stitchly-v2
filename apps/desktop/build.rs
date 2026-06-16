@@ -21,6 +21,7 @@ fn main() {
     println!("cargo:rerun-if-changed=.duckle-always-restamp-build-epoch");
 
     embed_runner();
+    embed_runner_linux();
     embed_mcp();
 
     tauri_build::build()
@@ -72,6 +73,41 @@ fn embed_mcp() {
         "cargo:rerun-if-changed={}",
         std::path::Path::new(&manifest_dir).join("bin").join(name).display()
     );
+}
+
+/// Locate the prebuilt STATIC Linux duckle-runner and expose its bytes to
+/// lib.rs via include_bytes!(env!("DUCKLE_EMBEDDED_RUNNER_LINUX")). This is the
+/// stub the desktop prepends when "Build Pipeline" targets Linux from a
+/// non-Linux host (cross-OS build). It is produced by
+/// scripts/build-runner-linux.sh (Docker musl build) and staged, gitignored,
+/// at apps/desktop/bin/duckle-runner-linux-x64.
+///
+/// Unlike the host runner (required), this is OPTIONAL: when not staged we
+/// embed an empty file so the desktop still builds; the Build Pipeline command
+/// then reports that this build cannot target Linux. On a Linux host build the
+/// host runner already covers the Linux target, so the cross stub is not staged
+/// there either.
+fn embed_runner_linux() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+
+    let staged = std::path::Path::new(&manifest_dir)
+        .join("bin")
+        .join("duckle-runner-linux-x64");
+    let dst = std::path::Path::new(&out_dir).join("embedded-runner-linux.bin");
+    if staged.exists() {
+        std::fs::copy(&staged, &dst).unwrap_or_else(|e| {
+            panic!("copy {} -> {}: {}", staged.display(), dst.display(), e)
+        });
+    } else {
+        std::fs::write(&dst, [])
+            .unwrap_or_else(|e| panic!("write empty embedded-runner-linux: {}", e));
+        println!(
+            "cargo:warning=Linux runner not staged (apps/desktop/bin/duckle-runner-linux-x64); Build Pipeline will not be able to target Linux from this build. Stage it: bash scripts/build-runner-linux.sh"
+        );
+    }
+    println!("cargo:rustc-env=DUCKLE_EMBEDDED_RUNNER_LINUX={}", dst.display());
+    println!("cargo:rerun-if-changed={}", staged.display());
 }
 
 /// Locate a freshly built `duckle-runner` and expose its bytes to lib.rs via

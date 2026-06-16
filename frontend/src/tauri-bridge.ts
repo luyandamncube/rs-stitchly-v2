@@ -555,6 +555,22 @@ export type SecretsMode = 'env' | 'passphrase';
  * duckle-runner. Returns the produced file path. Throws the runner's stderr
  * on failure so the caller can show it inline.
  */
+export type TargetOs = 'windows' | 'linux' | 'macos';
+
+export type BuildCapabilities = {
+    hostOs: TargetOs;
+    canTargetLinux: boolean;
+};
+
+/**
+ * What target OSes this build of Duckle can actually produce. Used so the Build
+ * Pipeline dialog never offers a target it cannot build (e.g. a Linux artifact
+ * when this build did not bundle the Linux runner).
+ */
+export async function buildCapabilities(): Promise<BuildCapabilities> {
+    return await invoke<BuildCapabilities>('build_capabilities');
+}
+
 export async function buildBundle(
     workspacePath: string,
     pipelineId: string,
@@ -562,6 +578,7 @@ export async function buildBundle(
     context: string | null,
     secretsMode: SecretsMode,
     passphrase?: string,
+    targetOs?: TargetOs,
 ): Promise<string> {
     return await invoke<string>('build_pipeline_bundle', {
         workspacePath,
@@ -570,6 +587,7 @@ export async function buildBundle(
         context: context ?? null,
         secretsMode,
         passphrase: secretsMode === 'passphrase' ? (passphrase ?? '') : null,
+        targetOs: targetOs ?? null,
     });
 }
 

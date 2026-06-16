@@ -2,8 +2,22 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CheckCircle2, FolderOpen, Package, X } from 'lucide-react';
 import { isTauri, tauriSavePath } from '../tauri-dialog';
-import { buildBundle, type SecretsMode } from '../tauri-bridge';
+import { buildBundle, buildCapabilities, type SecretsMode, type TargetOs } from '../tauri-bridge';
 import type { RepoItem } from '../repo-types';
+
+/// The OS Duckle itself is running on. The target OS defaults to this; only a
+/// Linux artifact can be cross-built off-Linux, and macOS only on a Mac.
+const HOST_OS: TargetOs = navigator.userAgent.includes('Windows')
+    ? 'windows'
+    : navigator.userAgent.includes('Mac')
+    ? 'macos'
+    : 'linux';
+
+const OS_LABELS: Record<TargetOs, string> = {
+    windows: 'Windows',
+    linux: 'Linux',
+    macos: 'macOS',
+};
 
 type Props = {
     pipelineId: string;
@@ -21,6 +35,11 @@ export default function BuildPipelineModal({
     onClose,
 }: Props) {
     const [outFile, setOutFile] = useState('');
+    const [targetOs, setTargetOs] = useState<TargetOs>(HOST_OS);
+    // Whether this build of Duckle bundled the Linux runner (so it can
+    // cross-build a Linux artifact off-Linux). Null until the backend answers;
+    // until then assume only a native Linux host can target Linux.
+    const [canTargetLinux, setCanTargetLinux] = useState(HOST_OS === 'linux');
     const [contextName, setContextName] = useState('');
     const [secretsMode, setSecretsMode] = useState<SecretsMode>('env');
     const [passphrase, setPassphrase] = useState('');
@@ -36,11 +55,21 @@ export default function BuildPipelineModal({
         return () => document.removeEventListener('keydown', onKey);
     }, [onClose, busy]);
 
+    useEffect(() => {
+        if (!isTauri()) return;
+        let alive = true;
+        buildCapabilities()
+            .then(caps => { if (alive) setCanTargetLinux(caps.canTargetLinux); })
+            .catch(() => { /* keep the conservative default */ });
+        return () => { alive = false; };
+    }, []);
+
     const pickOutputFile = async () => {
         if (!isTauri()) return;
         // The built artifact is a single file named after the pipeline:
-        // <name>.exe on Windows, <name> elsewhere. Use a save-file dialog.
-        const isWin = navigator.userAgent.includes('Windows');
+        // <name>.exe for a Windows target, <name> otherwise. Use a save-file
+        // dialog with the extension matching the SELECTED target OS.
+        const isWin = targetOs === 'windows';
         const ext = isWin ? '.exe' : '';
         const defaultName = pipelineName.replace(/[^A-Za-z0-9._-]+/g, '_') + ext;
         const picked = await tauriSavePath({
@@ -52,10 +81,25 @@ export default function BuildPipelineModal({
         if (picked) setOutFile(picked);
     };
 
+    // Which targets this build can actually produce: the native (same-OS)
+    // target always works; Linux can additionally be cross-built when the Linux
+    // runner is bundled. macOS and Windows can only be built on their own OS.
+    const isNative = targetOs === HOST_OS;
+    const targetSupported = isNative || (targetOs === 'linux' && canTargetLinux);
+
+    const unsupportedNote = !targetSupported
+        ? targetOs === 'macos'
+            ? "Building a macOS file requires a Mac. Apple's toolchain and code signing are only available on macOS, so run Duckle on a Mac to build it."
+            : targetOs === 'windows'
+            ? 'Building a Windows file requires running Duckle on Windows.'
+            : 'This build cannot target Linux: the Linux runner was not bundled. Rebuild Duckle after staging it (scripts/build-runner-linux.sh).'
+        : null;
+
     const canBuild =
         !busy &&
         !!workspacePath &&
         outFile.trim().length > 0 &&
+        targetSupported &&
         (secretsMode !== 'passphrase' || passphrase.trim().length > 0);
 
     const handleBuild = async () => {
@@ -66,13 +110,19 @@ export default function BuildPipelineModal({
         setBusy(true);
         setError(null);
         try {
+            // Normalize the extension to the target regardless of what was typed:
+            // .exe only for Windows, none otherwise. Keeps a typed path in step
+            // with Browse / the OS selector.
+            const base = outFile.trim().replace(/\.exe$/i, '');
+            const finalOut = targetOs === 'windows' ? base + '.exe' : base;
             const path = await buildBundle(
                 workspacePath,
                 pipelineId,
-                outFile.trim(),
+                finalOut,
                 contextName || null,
                 secretsMode,
                 secretsMode === 'passphrase' ? passphrase : undefined,
+                targetOs,
             );
             setResult(path);
         } catch (e) {
@@ -128,6 +178,45 @@ export default function BuildPipelineModal({
                     </div>
                 ) : (
                     <div className="modal-body">
+                        <div className="modal-field">
+                            <label className="modal-field-label">Target OS</label>
+                            <select
+                                className="modal-input modal-select"
+                                value={targetOs}
+                                onChange={e => {
+                                    const next = e.target.value as TargetOs;
+                                    setTargetOs(next);
+                                    // Keep the output extension in step with the
+                                    // target so a Windows file gets .exe and the
+                                    // others do not.
+                                    setOutFile(prev => {
+                                        if (!prev) return prev;
+                                        const base = prev.replace(/\.exe$/i, '');
+                                        return next === 'windows' ? base + '.exe' : base;
+                                    });
+                                }}
+                                disabled={busy}
+                            >
+                                <option value="windows">{OS_LABELS.windows}{HOST_OS === 'windows' ? ' (this machine)' : ''}</option>
+                                <option value="linux">{OS_LABELS.linux}{HOST_OS === 'linux' ? ' (this machine)' : ''}</option>
+                                <option value="macos">{OS_LABELS.macos}{HOST_OS === 'macos' ? ' (this machine)' : ''}</option>
+                            </select>
+                            {unsupportedNote ? (
+                                <div className="modal-tip">
+                                    <span>{unsupportedNote}</span>
+                                </div>
+                            ) : targetOs === 'linux' && HOST_OS !== 'linux' ? (
+                                <div className="modal-tip">
+                                    <span>
+                                        A self-contained Linux file is built here. After copying it to
+                                        Linux, make it runnable once with <code>chmod +x</code>. Connectors
+                                        that need DuckDB extensions (Postgres, S3, and similar) download
+                                        them at run time, so the target needs network for those.
+                                    </span>
+                                </div>
+                            ) : null}
+                        </div>
+
                         <div className="modal-field">
                             <label className="modal-field-label">Output file</label>
                             <div className="schedule-watch-row">

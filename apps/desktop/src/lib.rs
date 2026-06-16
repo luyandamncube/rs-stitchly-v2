@@ -36,6 +36,13 @@ use llama_chat::{ChatEvent, ChatMessage};
 /// compile-on-click is needed.
 const EMBEDDED_RUNNER: &[u8] = include_bytes!(env!("DUCKLE_EMBEDDED_RUNNER"));
 
+/// The STATIC Linux duckle-runner, embedded at compile time when staged at
+/// apps/desktop/bin/duckle-runner-linux-x64 (built by
+/// scripts/build-runner-linux.sh). Empty when this build did not bundle it. Used
+/// as the artifact stub when "Build Pipeline" targets Linux from a non-Linux
+/// host, so a Linux single-file artifact can be produced without a Linux box.
+const EMBEDDED_RUNNER_LINUX: &[u8] = include_bytes!(env!("DUCKLE_EMBEDDED_RUNNER_LINUX"));
+
 /// The duckle-mcp server, embedded at compile time when staged. Empty when this
 /// build did not bundle it (see build.rs embed_mcp). Written to a stable
 /// app-data path on demand so an MCP client config can point at it.
@@ -164,6 +171,7 @@ pub fn run() {
             workspace_ci_status,
             check_for_update,
             build_pipeline_bundle,
+            build_capabilities,
             mcp_connection_info,
             connect_claude_code,
             mcp_inject_config
@@ -684,37 +692,55 @@ async fn check_for_update() -> Result<update_check::UpdateInfo, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Write the embedded duckle-runner bytes to a temp stub file and return the
-/// handle. The runner serves as BOTH the builder (run with `build ...`) and
-/// the artifact stub (passed via --stub). The NamedTempFile auto-deletes on
-/// drop, so it must be kept alive until after the build Command has run.
+/// Write the embedded HOST duckle-runner bytes to a temp stub file and return
+/// the path. The host runner is always the BUILDER (run with `build ...`); for
+/// a same-OS target it is also the artifact stub. The file must have no open
+/// handle while it runs, or Windows CreateProcess fails with
+/// ERROR_SHARING_VIOLATION.
 fn staged_stub() -> Result<PathBuf, String> {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
+    stage_stub_bytes(EMBEDDED_RUNNER, suffix, "")
+}
+
+/// Write the embedded LINUX runner bytes to a temp stub file and return the
+/// path. Used ONLY as the artifact --stub when Build Pipeline targets Linux
+/// from a non-Linux host; it is read as bytes (prepended to the artifact),
+/// never executed on the host. Errors if this build did not bundle a Linux
+/// runner (see build.rs embed_runner_linux).
+fn staged_linux_stub() -> Result<PathBuf, String> {
+    if EMBEDDED_RUNNER_LINUX.is_empty() {
+        return Err(
+            "This build cannot target Linux: no Linux runner was bundled. Rebuild the desktop app after staging it with: bash scripts/build-runner-linux.sh"
+                .to_string(),
+        );
+    }
+    stage_stub_bytes(EMBEDDED_RUNNER_LINUX, "", "linux-")
+}
+
+/// Stage `bytes` to a temp file keyed by `tag` + byte length, returning the
+/// path. Caching by size means repeated builds reuse the same already-on-disk
+/// (already AV-scanned) file instead of rewriting and immediately executing a
+/// fresh exe every time. Writes to a unique sibling then renames into place so
+/// a concurrent build never sees a half-written stub.
+fn stage_stub_bytes(bytes: &[u8], suffix: &str, tag: &str) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir();
-    // Cache path keyed by the embedded runner size, so repeated builds reuse
-    // the same already-on-disk (already AV-scanned) file instead of writing a
-    // fresh exe and immediately executing it every time. The executed file
-    // must have NO open handle, or Windows CreateProcess fails with
-    // ERROR_SHARING_VIOLATION (os error 32) - which is exactly why the old
-    // NamedTempFile (kept open during the run) broke.
-    let path = dir.join(format!("duckle-stub-{}{}", EMBEDDED_RUNNER.len(), suffix));
+    let path = dir.join(format!("duckle-stub-{}{}{}", tag, bytes.len(), suffix));
     let correct = |p: &std::path::Path| {
         std::fs::metadata(p)
-            .map(|m| m.len() as usize == EMBEDDED_RUNNER.len())
+            .map(|m| m.len() as usize == bytes.len())
             .unwrap_or(false)
     };
     if correct(&path) {
         return Ok(path);
     }
-    // Write to a unique sibling and rename into place so a concurrent build
-    // never executes a half-written stub. std::fs::write closes the handle.
     let tmp = dir.join(format!(
-        "duckle-stub-{}-{}{}",
-        EMBEDDED_RUNNER.len(),
+        "duckle-stub-{}{}-{}{}",
+        tag,
+        bytes.len(),
         std::process::id(),
         suffix
     ));
-    std::fs::write(&tmp, EMBEDDED_RUNNER).map_err(|e| format!("write stub: {}", e))?;
+    std::fs::write(&tmp, bytes).map_err(|e| format!("write stub: {}", e))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -736,18 +762,45 @@ fn staged_stub() -> Result<PathBuf, String> {
     }
 }
 
+/// What target OSes this build of Duckle can produce a "Build Pipeline"
+/// artifact for. The same-OS target always works; a Linux target on a non-Linux
+/// host needs the bundled static Linux runner (embedded only when staged at
+/// build time). macOS and Windows can only be built on their own OS. The
+/// frontend uses this so it never offers a target it cannot actually produce.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildCapabilities {
+    host_os: String,
+    can_target_linux: bool,
+}
+
+#[tauri::command]
+fn build_capabilities() -> BuildCapabilities {
+    let host = std::env::consts::OS;
+    BuildCapabilities {
+        host_os: host.to_string(),
+        // On a Linux host the native build already covers Linux; on any other
+        // host it requires the bundled Linux runner.
+        can_target_linux: host == "linux" || !EMBEDDED_RUNNER_LINUX.is_empty(),
+    }
+}
+
 /// Build a self-contained, server-runnable single file for a workspace
-/// pipeline using the embedded `duckle-runner build` subcommand. The same
-/// embedded runner is used as the builder and as the artifact stub. Returns
-/// the path to the produced single file on success.
+/// pipeline using the embedded `duckle-runner build` subcommand. The embedded
+/// HOST runner is always the builder; for a same-OS target it is also the
+/// artifact stub, and for a Linux target on a non-Linux host the bundled Linux
+/// runner is the stub and a Linux DuckDB is fetched. macOS can only be built on
+/// a Mac. Returns the path to the produced single file on success.
 #[tauri::command]
 async fn build_pipeline_bundle(
+    app: tauri::AppHandle,
     workspace_path: String,
     pipeline_id: String,
     out_file: String,
     context: Option<String>,
     secrets_mode: String,
     passphrase: Option<String>,
+    target_os: Option<String>,
 ) -> Result<String, String> {
     if secrets_mode != "env" && secrets_mode != "passphrase" {
         return Err(format!("secrets mode must be env|passphrase, got {}", secrets_mode));
@@ -756,28 +809,92 @@ async fn build_pipeline_bundle(
         return Err("Passphrase is required for passphrase mode".to_string());
     }
 
-    let duckdb = DUCKDB_BIN
-        .get()
-        .cloned()
-        .ok_or_else(|| "Engine path not resolved yet (open the app fully first)".to_string())?;
-    // The runner treats a non-existent --duckdb as "no duckdb" and still
-    // produces a (best-effort) artifact that needs duckdb on PATH. That's by
-    // design, but warn so the missing-self-contained case is visible in the
-    // logs rather than silent. See issue #2 (DUCKDB_BIN is set unconditionally
-    // during setup even before the CLI is installed).
-    if !duckdb.exists() {
-        tracing::warn!(
-            "build_pipeline_bundle: duckdb not found at {} - the file will not embed duckdb and will rely on it being on PATH at run time",
-            duckdb.display()
-        );
+    let host = std::env::consts::OS;
+    let target = target_os.as_deref().unwrap_or(host).to_string();
+    match target.as_str() {
+        "windows" | "linux" | "macos" => {}
+        other => return Err(format!("target OS must be windows|linux|macos, got {}", other)),
     }
 
-    let stub_path = staged_stub()?;
+    // A Linux artifact can be cross-built on a non-Linux host using the bundled
+    // static Linux runner + a fetched Linux DuckDB. macOS and Windows artifacts
+    // can only be produced on their own OS (Apple's toolchain is Mac-only; we do
+    // not bundle a cross Windows runner).
+    let cross_linux = target != host && target == "linux";
+    if target != host {
+        match target.as_str() {
+            "macos" => {
+                return Err(
+                    "Building a macOS file requires a Mac. Apple's toolchain and code signing are only available on macOS, so run Duckle on a Mac to build the macOS artifact."
+                        .to_string(),
+                )
+            }
+            "windows" => {
+                return Err(
+                    "Building a Windows file requires running Duckle on Windows.".to_string(),
+                )
+            }
+            "linux" => {
+                if EMBEDDED_RUNNER_LINUX.is_empty() {
+                    return Err(
+                        "This build cannot target Linux: no Linux runner was bundled. Rebuild the desktop app after staging it with: bash scripts/build-runner-linux.sh"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    // Same-OS target uses the host engine; cross-Linux fetches the target engine
+    // inside the blocking task (network).
+    let host_duckdb = if cross_linux {
+        None
+    } else {
+        let duckdb = DUCKDB_BIN
+            .get()
+            .cloned()
+            .ok_or_else(|| "Engine path not resolved yet (open the app fully first)".to_string())?;
+        // The runner treats a non-existent --duckdb as "no duckdb" and still
+        // produces a (best-effort) artifact that needs duckdb on PATH. That's by
+        // design, but warn so the missing-self-contained case is visible in the
+        // logs rather than silent. See issue #2 (DUCKDB_BIN is set unconditionally
+        // during setup even before the CLI is installed).
+        if !duckdb.exists() {
+            tracing::warn!(
+                "build_pipeline_bundle: duckdb not found at {} - the file will not embed duckdb and will rely on it being on PATH at run time",
+                duckdb.display()
+            );
+        }
+        Some(duckdb)
+    };
+    let app_data = if cross_linux {
+        Some(app.path().app_data_dir().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+
     let out_fallback = out_file.clone();
 
     let output = tokio::task::spawn_blocking(move || {
+        // The host runner is always the builder (executed on this OS).
+        let builder = staged_stub()?;
+        // The artifact stub + duckdb are for the TARGET OS.
+        let (artifact_stub, duckdb) = if cross_linux {
+            let stub = staged_linux_stub()?;
+            let app_data = app_data.expect("app_data resolved for cross-linux build");
+            // The bundled Linux runner stub is x86_64-only (built by
+            // scripts/build-runner-linux.sh as x86_64-musl), so the bundled
+            // DuckDB and the manifest arch must be x86_64 too, regardless of the
+            // build host's arch. Pinning here keeps an ARM host from pairing an
+            // aarch64 duckdb with the x86_64 stub.
+            let duckdb = engine_manager::ensure_cross_duckdb(&app_data, "linux", "x86_64")?;
+            (stub, duckdb)
+        } else {
+            (builder.clone(), host_duckdb.expect("host duckdb resolved for same-os build"))
+        };
         let spawn_once = || {
-            let mut cmd = std::process::Command::new(&stub_path);
+            let mut cmd = std::process::Command::new(&builder);
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -788,8 +905,11 @@ async fn build_pipeline_bundle(
                 .arg("--pipeline-id").arg(&pipeline_id)
                 .arg("--out").arg(&out_file)
                 .arg("--secrets").arg(&secrets_mode)
-                .arg("--stub").arg(&stub_path)
+                .arg("--stub").arg(&artifact_stub)
                 .arg("--duckdb").arg(&duckdb);
+            if cross_linux {
+                cmd.arg("--target-os").arg("linux").arg("--target-arch").arg("x86_64");
+            }
             if let Some(ctx) = context.as_deref() {
                 if !ctx.is_empty() {
                     cmd.arg("--context").arg(ctx);
