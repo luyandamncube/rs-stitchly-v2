@@ -892,6 +892,9 @@ impl DuckdbEngine {
                     Some(RuntimeSpec::AttachParquetSource(spec)) => {
                         self.run_attach_parquet_source(&db_path, spec)
                     }
+                    Some(RuntimeSpec::MaterializeDuckDb(spec)) => {
+                        self.run_materialize_duckdb(&db_path, spec)
+                    }
                     Some(RuntimeSpec::RedisSink(spec)) => self.run_redis_sink(&db_path, spec),
                     Some(RuntimeSpec::RedisSource(spec)) => self.run_redis_source(&db_path, spec),
                     Some(RuntimeSpec::QdrantSource(spec)) => self.run_qdrant_source(&db_path, spec),

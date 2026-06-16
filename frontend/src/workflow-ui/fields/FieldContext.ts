@@ -12,6 +12,8 @@ export type FieldContextValue = {
     upstreamSchema: Column[];
     nodeSchema: Column[];
     repoItems: RepoItem[];
+    /** Workspace root, for resolving the ${workspace}/${projectroot} builtins. */
+    workspacePath?: string | null;
     /** The context whose variables fields can bind to (if any). */
     activeContext?: ActiveContext;
     onPickConnection?: (payload: ConnectionPayload) => void;

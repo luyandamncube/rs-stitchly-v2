@@ -66,8 +66,20 @@ const MATERIALIZE_FIELD: Field = {
         { label: 'View (lazy, may re-scan the source)', value: 'view' },
         { label: 'Memory (read once, table held in RAM)', value: 'memory' },
         { label: 'Disk (read once, streamed via a temp Parquet file)', value: 'disk' },
+        { label: 'DuckDB (read once, temp DuckDB file)', value: 'duckdb' },
+        { label: 'DuckDB file (persistent - query it later)', value: 'duckdbfile' },
     ],
-    description: 'How this step is stored. Auto uses a view for a single consumer and a table when several steps read it. Memory and Disk both read an expensive source only once (e.g. when a downstream split would otherwise scan it twice): Memory holds the rows as a table (fast, RAM-buffered), Disk streams them through a temp Parquet file (minimal RAM, for huge intermediates). View keeps it lazy even with several consumers.',
+    description: 'How this step is stored. Auto uses a view for a single consumer and a table when several steps read it. Memory and Disk both read an expensive source only once (e.g. when a downstream split would otherwise scan it twice): Memory holds the rows as a table (fast, RAM-buffered), Disk streams them through a temp Parquet file (minimal RAM, for huge intermediates). DuckDB writes the step into a DuckDB database file - temporary (swept at run end) or a persistent named .duckdb you can open and query for analytics later. View keeps it lazy even with several consumers.',
+};
+
+// Shown only when Materialize = "DuckDB file (persistent)": the .duckdb path the
+// step's rows are written to so they can be queried after the run.
+const MATERIALIZE_PATH_FIELD: Field = {
+    key: 'materializePath',
+    label: 'DuckDB file path',
+    kind: 'save-path',
+    placeholder: '${workspace}/analytics/intermediate.duckdb',
+    description: 'Absolute path (or ${workspace}-relative) to the .duckdb file this step is written into. The table is named after the node id.',
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -302,6 +314,7 @@ export default function PropertiesPanel({
                     upstreamSchema,
                     nodeSchema: declaredSchema,
                     repoItems,
+                    workspacePath,
                     activeContext,
                     onPickConnection: (payload: ConnectionPayload) => {
                         if (!selected) return;
@@ -390,6 +403,13 @@ export default function PropertiesPanel({
                                     }
                                     onChange={v => setProperty(MATERIALIZE_FIELD.key, v)}
                                 />
+                                {props[MATERIALIZE_FIELD.key] === 'duckdbfile' ? (
+                                    <FieldRenderer
+                                        field={MATERIALIZE_PATH_FIELD}
+                                        value={props[MATERIALIZE_PATH_FIELD.key]}
+                                        onChange={v => setProperty(MATERIALIZE_PATH_FIELD.key, v)}
+                                    />
+                                ) : null}
                             </div>
                         </div>
                     ) : null}

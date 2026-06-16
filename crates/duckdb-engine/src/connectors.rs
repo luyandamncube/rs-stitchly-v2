@@ -1256,6 +1256,61 @@ impl DuckdbEngine {
         Ok(format!("attach-parquet: materialized {}", spec.node_id))
     }
 
+    /// materialize = "duckdb" / "duckdbfile": write this stage into a DuckDB
+    /// database file (a real table) and ALSO expose it as a normal table in the
+    /// run db so downstream stages read it without re-attaching. With an
+    /// `output_path` the file is the user's persistent `.duckdb` (kept for later
+    /// analytics); without one it is a run-scoped temp file swept at run end.
+    pub(crate) fn run_materialize_duckdb(
+        &self,
+        db: &Path,
+        spec: &plan::MaterializeDuckDbSpec,
+    ) -> Result<String, EngineError> {
+        let safe_node: String = spec
+            .node_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let db_name = db
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let (target, persistent) = match &spec.output_path {
+            Some(p) => (p.clone(), true),
+            // Temp file shares the run-db name prefix so the temp-db sweep
+            // collects it at run end, like the attach-parquet temp files.
+            None => (
+                db.with_file_name(format!("{}.matddb-{}.duckdb", db_name, safe_node))
+                    .to_string_lossy()
+                    .into_owned(),
+                false,
+            ),
+        };
+        let dbpath = target.replace('\\', "/").replace('\'', "''");
+        // Per-stage alias avoids the batched "alias already exists" collision;
+        // DETACH at the end so a later stage in the same connection is clean.
+        let alias = format!("duckle_mat_{}", safe_node);
+        let node = plan::quote_ident(&spec.node_id);
+        let sql = format!(
+            "{attach}ATTACH '{dbpath}' AS {alias}; \
+             CREATE OR REPLACE TABLE {alias}.{node} AS ({body}); \
+             CREATE OR REPLACE TABLE {node} AS SELECT * FROM {alias}.{node}; \
+             DETACH {alias}",
+            attach = spec.attach,
+            dbpath = dbpath,
+            alias = alias,
+            node = node,
+            body = spec.body,
+        );
+        self.run(Some(db), &sql, false)?;
+        Ok(format!(
+            "materialize-duckdb: {} -> {} ({})",
+            spec.node_id,
+            target,
+            if persistent { "persistent" } else { "temp" }
+        ))
+    }
+
     /// Convert one cell of a SQL Server row to JSON without silently
     /// losing data. Same issue as Oracle: the old cascade
     /// try-`&str`-then-`i64`-then-`i32`-then-`f64`-then-`bool` failed

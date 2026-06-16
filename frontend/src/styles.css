@@ -2971,6 +2971,26 @@ html[dir='rtl'] .topbar-lang {
     line-height: 1.4;
 }
 
+/* Resolved-value hint shown under a field whose value contains ${VAR}
+   references: each line is "${KEY} = value" (secrets masked). */
+.form-field-resolved {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    margin-top: 4px;
+    padding: 4px 6px;
+    border-left: 2px solid var(--maya, #3d8bff);
+    background: color-mix(in srgb, var(--maya, #3d8bff) 8%, transparent);
+    border-radius: 3px;
+    font-size: 11px;
+    font-family: var(--mono, monospace);
+    color: var(--text-2);
+    word-break: break-all;
+}
+.form-field-resolved-line {
+    line-height: 1.4;
+}
+
 .field-textarea {
     width: 100%;
     resize: vertical;

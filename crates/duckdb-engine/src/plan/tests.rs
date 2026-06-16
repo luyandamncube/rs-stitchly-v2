@@ -586,6 +586,76 @@
     }
 
     #[test]
+    fn materialize_duckdb_temp_routes_to_duckdb_spec_without_path() {
+        // materialize=duckdb persists the stage into a temp DuckDB file (no
+        // user path).
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/orders.csv","hasHeader":true,"materialize":"duckdb"}}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"Out","componentId":"snk.parquet","properties":{"path":"/tmp/out.parquet"}}}
+              ],
+              "edges": [{"id":"e1","source":"s1","target":"k1","data":{"connectionType":"main"}}]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let src = compiled.stages.iter().find(|s| s.node_id == "s1").unwrap();
+        match src.runtime.as_ref() {
+            Some(RuntimeSpec::MaterializeDuckDb(spec)) => {
+                assert!(spec.output_path.is_none(), "temp target must have no path");
+            }
+            other => panic!("expected MaterializeDuckDb, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn materialize_duckdbfile_carries_path_and_requires_it() {
+        // materialize=duckdbfile with a path persists into that .duckdb.
+        let ok = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true,"materialize":"duckdbfile","materializePath":"/tmp/lake.duckdb"}}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"Out","componentId":"snk.parquet","properties":{"path":"/tmp/out.parquet"}}}
+              ],
+              "edges": [{"id":"e1","source":"s1","target":"k1","data":{"connectionType":"main"}}]
+            }"#,
+        );
+        let src = compile(&ok).unwrap();
+        let st = src.stages.iter().find(|s| s.node_id == "s1").unwrap();
+        match st.runtime.as_ref() {
+            Some(RuntimeSpec::MaterializeDuckDb(spec)) => {
+                assert_eq!(spec.output_path.as_deref(), Some("/tmp/lake.duckdb"));
+            }
+            other => panic!("expected MaterializeDuckDb with path, got {:?}", other),
+        }
+        // Without materializePath it fails loud (no silent temp fallback).
+        let bad = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true,"materialize":"duckdbfile"}}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"Out","componentId":"snk.parquet","properties":{"path":"/tmp/out.parquet"}}}
+              ],
+              "edges": [{"id":"e1","source":"s1","target":"k1","data":{"connectionType":"main"}}]
+            }"#,
+        );
+        let err = compile(&bad).unwrap_err();
+        assert!(
+            err.to_string().contains("materializePath") || err.to_string().to_lowercase().contains("path"),
+            "missing materializePath must fail loud, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn materialize_view_override_keeps_view_with_multiple_consumers() {
         // materialize=view forces a lazy VIEW even when 2+ consumers would
         // otherwise materialize it as a TABLE (per-node DUCKLE_FORCE_VIEWS).

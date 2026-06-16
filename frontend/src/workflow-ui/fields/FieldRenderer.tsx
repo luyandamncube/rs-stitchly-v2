@@ -18,6 +18,8 @@ import { ConnectionRefField } from './ConnectionRefField';
 import { RoutineRefField } from './RoutineRefField';
 import { PipelineRefField } from './PipelineRefField';
 import { FieldContext } from './FieldContext';
+import { buildContextVars, builtinVars } from '../../run-resolve';
+import type { ContextPayload } from '../../repo-types';
 
 type Props = {
     field: Field;
@@ -51,9 +53,57 @@ export default function FieldRenderer({ field, value, onChange }: Props) {
             ) : (
                 renderInput(field, value, onChange)
             )}
+            {BINDABLE.has(field.kind) ? <ResolvedHint value={value} /> : null}
             {field.description ? (
                 <div className="form-field-desc">{field.description}</div>
             ) : null}
+        </div>
+    );
+}
+
+const PLACEHOLDER_RE = /\$\{([^}]+)\}/g;
+
+/**
+ * When a field value contains ${VAR} / ${ctx.VAR} references, show what each
+ * resolves to (from the workspace context + builtins) so you can see the value
+ * without opening the Contexts editor. Secret-flagged variables are masked.
+ */
+function ResolvedHint({ value }: { value: unknown }) {
+    const { repoItems, workspacePath } = useContext(FieldContext);
+    if (typeof value !== 'string' || !value.includes('${')) return null;
+
+    const refs: string[] = [];
+    for (const m of value.matchAll(PLACEHOLDER_RE)) {
+        const key = m[1].trim();
+        if (key && !refs.includes(key)) refs.push(key);
+    }
+    if (refs.length === 0) return null;
+
+    const vars = { ...builtinVars(workspacePath), ...buildContextVars(repoItems) };
+    // Keys (bare and context-namespaced) whose variable is flagged secret.
+    const secretKeys = new Set<string>();
+    for (const item of repoItems) {
+        if (item.type !== 'context') continue;
+        const payload = item.payload as ContextPayload | undefined;
+        for (const v of payload?.variables ?? []) {
+            if (v.secret) {
+                secretKeys.add(v.key);
+                secretKeys.add(`${item.name}.${v.key}`);
+            }
+        }
+    }
+
+    const lines = refs.map(key => {
+        if (secretKeys.has(key)) return `\${${key}} = •••• (secret)`;
+        if (Object.prototype.hasOwnProperty.call(vars, key)) return `\${${key}} = ${vars[key]}`;
+        return `\${${key}} = (not set)`;
+    });
+
+    return (
+        <div className="form-field-resolved" title={lines.join('\n')}>
+            {lines.map((line, i) => (
+                <span key={i} className="form-field-resolved-line">{line}</span>
+            ))}
         </div>
     );
 }

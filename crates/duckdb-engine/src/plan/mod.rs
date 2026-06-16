@@ -121,6 +121,8 @@ pub enum RuntimeSpec {
     OracleSource(OracleSourceSpec),
     AdbcSource(AdbcSourceSpec),
     AttachParquetSource(AttachParquetSourceSpec),
+    /// materialize = "duckdb"/"duckdbfile": persist the stage into a DuckDB file.
+    MaterializeDuckDb(MaterializeDuckDbSpec),
     RedisSink(RedisSinkSpec),
     RedisSource(RedisSourceSpec),
     QdrantSource(QdrantSourceSpec),
@@ -565,6 +567,7 @@ fn build_stage(
     let mut oracle_source: Option<OracleSourceSpec> = None;
     let mut adbc_source: Option<AdbcSourceSpec> = None;
     let mut attach_parquet_source: Option<AttachParquetSourceSpec> = None;
+    let mut materialize_duckdb: Option<MaterializeDuckDbSpec> = None;
     let mut redis_sink: Option<RedisSinkSpec> = None;
     let mut redis_source: Option<RedisSourceSpec> = None;
     let mut qdrant_source: Option<QdrantSourceSpec> = None;
@@ -3145,7 +3148,8 @@ fn build_stage(
             .and_then(|v| v.as_str())
             .unwrap_or("auto");
         let forced_view = force_views || materialize == "view";
-        let forced_table = matches!(materialize, "table" | "memory" | "disk");
+        let forced_table =
+            matches!(materialize, "table" | "memory" | "disk" | "duckdb" | "duckdbfile");
         let view_ok = |consumers: usize| {
             !uses_dynamic_pivot
                 && !attach_backed
@@ -3195,6 +3199,37 @@ fn build_stage(
                 node_id: node.id.clone(),
                 attach: attach.to_string(),
                 body: body.to_string(),
+            });
+        }
+        // Materialize = "duckdb" / "duckdbfile": persist this stage into a DuckDB
+        // database file (a real table) and expose it as a normal run-db table for
+        // downstream stages. "duckdb" uses a run-scoped temp file (swept at end);
+        // "duckdbfile" writes a user-named persistent .duckdb (materializePath) so
+        // the rows can be queried for analytics later. Excluded for reject-split
+        // (the body would cover only the main side) and never overrides the
+        // attach-parquet fast path.
+        if (materialize == "duckdb" || materialize == "duckdbfile")
+            && attach_parquet_source.is_none()
+            && reject_sql.is_none()
+        {
+            let output_path = if materialize == "duckdbfile" {
+                let p = string_prop(&props, "materializePath")
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| {
+                        EngineError::Config(format!(
+                            "{}: a DuckDB file path (materializePath) is required for the 'DuckDB file (persistent)' materialize target",
+                            component_id
+                        ))
+                    })?;
+                Some(p)
+            } else {
+                None
+            };
+            materialize_duckdb = Some(MaterializeDuckDbSpec {
+                node_id: node.id.clone(),
+                attach: attach.to_string(),
+                body: body.to_string(),
+                output_path,
             });
         }
         // Always build the logical CREATE TABLE as the stage SQL. When the
@@ -3259,6 +3294,7 @@ fn build_stage(
         .or_else(|| oracle_source.map(RuntimeSpec::OracleSource))
         .or_else(|| adbc_source.map(RuntimeSpec::AdbcSource))
         .or_else(|| attach_parquet_source.map(RuntimeSpec::AttachParquetSource))
+        .or_else(|| materialize_duckdb.map(RuntimeSpec::MaterializeDuckDb))
         .or_else(|| redis_sink.map(RuntimeSpec::RedisSink))
         .or_else(|| redis_source.map(RuntimeSpec::RedisSource))
         .or_else(|| qdrant_source.map(RuntimeSpec::QdrantSource))

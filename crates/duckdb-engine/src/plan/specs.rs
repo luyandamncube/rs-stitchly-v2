@@ -196,6 +196,24 @@ pub struct AttachParquetSourceSpec {
     pub body: String,
 }
 
+/// materialize = "duckdb" / "duckdbfile": persist this stage into a DuckDB
+/// database file (a real table, not parquet), then expose it to the run as a
+/// normal table so downstream stages read it unchanged. `output_path = None`
+/// is a temporary file (swept at run end); `Some(path)` is a user-named,
+/// persistent `.duckdb` the rows stay in so they can be queried for analytics
+/// later without re-running the pipeline.
+#[derive(Debug, Clone)]
+pub struct MaterializeDuckDbSpec {
+    pub node_id: String,
+    /// Same INSTALL/LOAD/ATTACH preamble the plain stage uses (empty for a
+    /// local transform); the body reads from whatever it sets up.
+    pub attach: String,
+    /// The stage's SELECT body.
+    pub body: String,
+    /// Target `.duckdb` path; `None` = a run-scoped temp file.
+    pub output_path: Option<String>,
+}
+
 /// snk.redis: SET each input row's keyColumn -> valueColumn into Redis
 /// via the sync redis client. Optional TTL via EXPIRE. If valueColumn
 /// is not set, the entire row gets JSON-stringified as the value.
