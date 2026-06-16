@@ -3410,11 +3410,13 @@ pub(crate) fn build_relational_sink(
             q = qual,
             from = quote_ident(from_view)
         )),
-        // Append inserts into an existing table; the table must already
-        // exist (create-if-missing isn't wired yet because we don't know
-        // the upstream's column types ahead of time without inspecting).
+        // Append inserts into the target, creating it on first write when it
+        // doesn't exist yet. CREATE TABLE AS SELECT ... LIMIT 0 derives the
+        // column types from the upstream, so no separate schema inspection is
+        // needed - matching the truncate/upsert branches below and build_db_sink.
         "append" => Ok(format!(
-            "INSERT INTO {q} SELECT * FROM {from}",
+            "CREATE TABLE IF NOT EXISTS {q} AS SELECT * FROM {from} LIMIT 0; \
+             INSERT INTO {q} SELECT * FROM {from}",
             q = qual,
             from = quote_ident(from_view)
         )),

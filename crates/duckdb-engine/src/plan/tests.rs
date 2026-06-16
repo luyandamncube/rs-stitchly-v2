@@ -1963,6 +1963,26 @@
     }
 
     #[test]
+    fn relational_sink_append_creates_table_on_first_write() {
+        // A MotherDuck (relational) sink in append mode used to emit a bare
+        // INSERT INTO, which fails the first time the target doesn't exist
+        // (e.g. appending ledger rows from a foreach). Append now creates the
+        // table from the upstream's types before inserting, like truncate/upsert.
+        let sql = build_sink_sql(
+            "snk.motherduck",
+            &serde_json::json!({"database": "my_db", "tableName": "process_ledger", "mode": "append"}),
+            "v",
+        )
+        .unwrap();
+        assert!(
+            sql.contains("CREATE TABLE IF NOT EXISTS") && sql.contains("LIMIT 0"),
+            "append must create-if-missing from upstream types, got: {}",
+            sql
+        );
+        assert!(sql.contains("INSERT INTO"), "append must still insert, got: {}", sql);
+    }
+
+    #[test]
     fn db_sink_upsert_rejects_empty_conflict_columns() {
         // audit pass-3: conflictColumns=[""] used to pass the length-based
         // guard and emit a zero-length quoted identifier. The empty entry is
