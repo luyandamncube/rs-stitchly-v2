@@ -16,9 +16,6 @@
 <img alt="typescript" src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=white"/>
 <img alt="duckdb" src="https://img.shields.io/badge/DuckDB-FFF000?logo=duckdb&logoColor=black"/>
 <img alt="stars" src="https://img.shields.io/github/stars/ducklelabs/duckle?style=social"/>
-<!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-[![All Contributors](https://img.shields.io/github/all-contributors/ducklelabs/duckle?color=ff6900&style=flat-square)](#contributors)
-<!-- ALL-CONTRIBUTORS-BADGE:END -->
 </p>
 
 </div>
