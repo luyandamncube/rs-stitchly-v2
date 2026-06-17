@@ -95,6 +95,7 @@
 <h2>Connections and contexts</h2>
 <p>Connections are reusable, type-filtered credential sets stored under <code>connections/</code> and AES-256-GCM encrypted at rest with a per-workspace key. Each database, warehouse, or storage node has a "Saved connection" picker that auto-fills host, port, database, and credentials, so the same credentials are shared across every node that needs them.</p>
 <p>Context variables let you parameterize any field with <code>${VAR}</code> or <code>${ContextName.VAR}</code> (for example, a database password), resolved at run time on the canvas and on scheduled runs alike. Never hardcode secrets; use <code>${ENV:KEY}</code> placeholders for env-supplied values.</p>
+<p>Built-in placeholders need no context: <code>${workspace}</code> (alias <code>${projectroot}</code>) resolves to the project root, and <code>${date}</code>, <code>${time}</code>, <code>${datetime}</code>, <code>${timestamp}</code>, and <code>${now}</code> stamp the run time (UTC) into a path. They resolve fresh on every run, and a sink's parent folder is created automatically, so <code>${workspace}/exports/${date}/orders.parquet</code> lands in a new dated folder each day.</p>
 <div class="note"><b>Tip</b> Use a context per environment (dev, staging, prod) and select it at run time so one pipeline targets different systems without edits.</div>
 
 <h2>MCP server (connect Claude or any LLM)</h2>

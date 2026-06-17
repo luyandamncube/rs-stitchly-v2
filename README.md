@@ -129,6 +129,10 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 - **Portable workspaces.** A built-in **`${workspace}`** placeholder resolves to the current workspace folder, so file paths travel with the project.
 - **Local multi-account profiles.** Keep separate accounts / workspaces and switch between them from the top bar without restarting.
 - **Resolved context-variable hints.** Bindable fields show the **resolved value** of a `${VAR}` inline (secrets masked), so you see exactly what a node will use.
+- **Run-time path placeholders.** `${date}`, `${time}`, `${datetime}`, `${timestamp}`, and `${now}` resolve at run time (UTC) in any source / sink path, and a sink's parent folder is created automatically - so `${workspace}/exports/${date}/orders.parquet` writes into a fresh dated folder on every run, on the canvas, on a schedule, and in a built bundle.
+- **Organize the project tree.** Drag a pipeline (or any item, or one of your own folders) onto a folder to move it; the move is saved to the workspace.
+- **REST source improvements.** The API-key auth header name is now configurable (so endpoints like `X-Redmine-API-Key` work), and offset pagination can stop on a body `total_count` instead of probing one page past the end.
+- **Merge write mode.** DuckDB-family sinks (DuckDB, SQLite, DuckLake, MotherDuck) gain a **merge** mode that updates only the columns the source carries via `MERGE INTO`, preserving the columns it does not.
 - **MotherDuck polish.** The real MotherDuck brand mark, inline token applied via `SET` (no more device-login prompts), sinks that auto-create the target on first write, and Snowflake endpoint + MotherDuck upsert exposed in the property panel.
 - **Smarter auto-layout.** One-click tidy ranks nodes by dependency depth and spaces columns by node width, so connectors always have room.
 - **A new website and docs** at **[duckle.org](https://duckle.org)** - landing page, component and automation docs, a filterable integrations directory, and search-friendly metadata.
@@ -241,7 +245,7 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 | **Cloud warehouses** | MotherDuck, Snowflake (SQL API + PAT/JWT), BigQuery, Redshift (postgres ATTACH), Databricks SQL (Statement Execution + chunk follow), Azure Synapse (TDS), **DuckDB Quack** (May 2026 remote protocol - HTTP on :9494, SECRET-based token auth) | Available |
 | **Streaming** | Apache Kafka / Redpanda (pure-Rust `rskafka`), NATS JetStream, GCP Pub/Sub (REST + auto-ack), RabbitMQ (`lapin` AMQP), AWS Kinesis (HTTP + SigV4 - no AWS SDK) | Available |
 | **Streaming** | Pulsar, Event Hubs, multi-shard Kinesis | Planned |
-| **APIs and SaaS (REST)** | Salesforce, HubSpot, Pipedrive, Zendesk, Intercom, Stripe, QuickBooks, Xero, Shopify, Notion, Airtable, Asana, Trello, ClickUp, Monday.com, GitHub, GitLab, Linear, Jira, Slack, Discord, Telegram, Twilio, Mailchimp, SendGrid, Segment - thin pre-configured wrappers over `src.rest` / `src.graphql` | Available |
+| **APIs and SaaS (REST)** | Salesforce, HubSpot, Pipedrive, Zendesk, Intercom, Stripe, QuickBooks, Xero, Shopify, Notion, Airtable, Asana, Trello, ClickUp, Monday.com, GitHub, GitLab, Linear, Jira, Slack, Discord, Telegram, Twilio, Mailchimp, SendGrid, Segment - thin pre-configured wrappers over `src.rest` / `src.graphql`. `src.rest` takes a configurable API-key auth header name and offset pagination that stops on a body `total_count` | Available |
 | **APIs (protocols)** | OData v4 (follows `@odata.nextLink`), SOAP / generic XML APIs (XML response parsing with namespace local-name match) | Available |
 | **NoSQL and search** | MongoDB (official driver), Cassandra / ScyllaDB (CQL), Elasticsearch / OpenSearch (from+size + search_after), Redis (SCAN + GET), CouchDB (`_all_docs`), DynamoDB (HTTP + SigV4 - no AWS SDK; auto-unwraps typed attributes) | Available |
 | **Vector / AI databases** | pgvector (postgres ATTACH), Qdrant (`/points/scroll`), Weaviate (`/v1/objects`), Milvus (`/v1/vector/query`) | Available |
@@ -315,14 +319,14 @@ Validators split their input: passing rows continue on the main port, failures r
 |---|---|---|
 | **Files** | CSV, TSV, Parquet (ZSTD), JSON, JSONL / NDJSON, Excel (.xlsx), YAML, TOML, XML (configurable wrappers), Avro (schema inferred from first row). Parquet + CSV support Hive-partitioned writes | Available |
 | **Geospatial files** | GeoJSON, GeoPackage, Shapefile, KML, GPX via GDAL | Available (lazy-loaded) |
-| **Lakehouse** | Apache Iceberg (full table layout), DuckLake - modes: **overwrite**, **append**, **truncate**, **upsert** (set-based delete-by-key + re-insert) with optional CDC delete propagation | Available |
-| **Embedded databases** | SQLite, DuckDB - modes: **overwrite**, **append**, **upsert** (set-based delete-by-key + re-insert, no PK required) with optional CDC delete propagation | Available |
+| **Lakehouse** | Apache Iceberg (full table layout), DuckLake - modes: **overwrite**, **append**, **truncate**, **upsert** (set-based delete-by-key + re-insert), **merge** (partial-column `MERGE INTO` that preserves columns the source omits) with optional CDC delete propagation | Available |
+| **Embedded databases** | SQLite, DuckDB - modes: **overwrite**, **append**, **upsert** (set-based delete-by-key + re-insert, no PK required), **merge** (partial-column `MERGE INTO` that preserves columns the source omits) with optional CDC delete propagation | Available |
 | **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB - modes: **overwrite**, **append**, **truncate**, **upsert** (ON CONFLICT / ON DUPLICATE KEY) with optional CDC delete propagation | Available (live CI for PG + MySQL) |
 | **Network relational DBs** | SQL Server / Azure Synapse (TDS, multi-row VALUES batched; auto-creates the table if absent; **upsert** via MERGE), Oracle (Instant Client; INSERT ALL, batched per statement; auto-creates the table if absent; **upsert** via MERGE), ClickHouse (HTTP JSONEachRow; upsert by pointing at a ReplacingMergeTree target table) - every MERGE sink supports **CDC delete propagation** (a delete-flag column removes matched rows) | Available (SQL Server + Oracle + MySQL upsert and delete propagation verified live in Docker) |
 | **Network relational DBs** | IBM DB2, generic JDBC | Planned |
 | **Object storage** | S3, GCS, Azure Blob via DuckDB `httpfs` (MinIO / R2 / B2 via endpoint) | Available |
 | **Cloud warehouses** | MotherDuck, Snowflake (PAT or JWT RS256; **upsert** + delete propagation via MERGE), BigQuery, Redshift, Databricks SQL (**upsert** + delete propagation via MERGE), Azure Synapse, **DuckDB Quack** (concurrent writers to remote DuckDB via the May 2026 protocol) | Available (Snowflake MERGE verified live against the SQL-API emulator) |
-| **HTTP APIs** | REST (POST/PUT/PATCH batched JSON-array), Webhook (one POST per row), GraphQL mutations | Available |
+| **HTTP APIs** | REST (POST/PUT/PATCH batched JSON-array; configurable API-key auth header name), Webhook (one POST per row), GraphQL mutations | Available |
 | **Email (SMTP)** | Per-row SMTP send via pure-Rust `lettre` + rustls. Plain text v1; HTML + attachments follow. | Available |
 | **NoSQL** | MongoDB (insert_many batched; **upsert** via replace_one on a key, plus delete propagation via delete_one), Cassandra / ScyllaDB (CQL), Elasticsearch / OpenSearch (`_bulk` NDJSON), Redis (pipelined SET) | Available |
 | **NoSQL** | DynamoDB | Planned |
@@ -374,6 +378,7 @@ Every node has an **Advanced** tab with fields the engine honours at run time:
 | **Schedules** | Cron, fixed-interval, and file-watch triggers, driven by an in-process scheduler. |
 | **Context variables** | Per-environment variables; bind any field to one via a Manual / Context dropdown, or reference `${var}` inline. Resolved at run time. |
 | **Workspace-relative paths** | Built-in `${workspace}` (alias `${projectroot}`) resolves to the active workspace root, so source / sink paths can be written relative to it and a workspace folder stays portable when copied or moved. No context needed; works in the canvas, schema autodetect, and headless runs. |
+| **Run-time path placeholders** | Built-in `${date}`, `${time}`, `${datetime}`, `${timestamp}`, and `${now}` (UTC) stamp the current run time into any path. They resolve fresh on every run (canvas, schedule, headless runner, built bundle), and a sink's parent folder is created automatically, so a path like `${workspace}/exports/${date}/orders.parquet` lands in a new dated folder each day. No context needed. |
 | **Cloud credentials** | Saved S3 / GCS / Azure connections become DuckDB SECRETs; cloud reads / writes go through `httpfs`. S3-compatible endpoints (MinIO / R2 / B2) supported via `ENDPOINT` + `URL_STYLE`. |
 | **Workspace** | Pipelines, connections, contexts, documents, and routines persist as plain JSON and Markdown files in a folder you choose. |
 
@@ -823,7 +828,7 @@ Saved connections become DuckDB secrets at runtime so credentials never leak int
 | **Snowflake** | account, user, role, warehouse, PAT or JWT private key | `src.snowflake`, `snk.snowflake` |
 | **S3 / GCS / Azure** | access key, secret, region (or service-account JSON) | All cloud sources/sinks via `httpfs` |
 | **MotherDuck / Databricks / BigQuery** | token, workspace URL | Respective sources/sinks |
-| **Generic REST / SaaS** | base URL, auth scheme (Bearer / API key / Basic), token, custom headers | All REST aliases |
+| **Generic REST / SaaS** | base URL, auth scheme (Bearer / API key / Basic, with a configurable API-key header name), token, custom headers | All REST aliases |
 
 Connections live in `workspace/connections/` as JSON. The token/password field is encrypted with the workspace key; the rest is plain text.
 
