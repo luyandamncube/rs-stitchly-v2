@@ -41,7 +41,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
-- [What's new in v0.4.0](#whats-new-in-v040)
+- [What's new in v0.4.1](#whats-new-in-v041)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -121,25 +121,19 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 ---
 
-## What's new in v0.4.0
+## What's new in v0.4.1
 
-- **Cross-OS Build Pipeline.** The Build dialog has a **Target OS** selector. Build a self-contained **Linux** server file from any OS (the Linux engine and DuckDB are bundled for you), build natively for **Windows**, or build for **macOS** on a Mac. Same single-file output, now per target.
-- **Materialize a step to DuckDB.** Pin any step to memory, to disk, or persist it to a real **`.duckdb` file** you can reopen later - handy for caching an expensive join or handing a step's output to a BI tool.
-- **Parallel loops.** `ctl.foreach` runs its per-row child pipeline with a configurable **concurrency**, so fan-out work (per-table loads, per-partition exports) finishes far faster.
-- **Zip Arrays to Table** (`xf.zip`) - turn a headings array plus row-arrays into a proper table, one column per heading.
-- **Portable workspaces.** A built-in **`${workspace}`** placeholder resolves to the current workspace folder, so file paths travel with the project.
-- **Local multi-account profiles.** Keep separate accounts / workspaces and switch between them from the top bar without restarting.
-- **Resolved context-variable hints.** Bindable fields show the **resolved value** of a `${VAR}` inline (secrets masked), so you see exactly what a node will use.
-- **Run-time path placeholders.** `${date}`, `${time}`, `${datetime}`, `${timestamp}`, and `${now}` resolve at run time (UTC) in any source / sink path, and a sink's parent folder is created automatically - so `${workspace}/exports/${date}/orders.parquet` writes into a fresh dated folder on every run, on the canvas, on a schedule, and in a built bundle.
-- **Organize the project tree.** Drag a pipeline (or any item, or one of your own folders) onto a folder to move it; the move is saved to the workspace.
-- **REST source improvements.** The API-key auth header name is now configurable (so endpoints like `X-Redmine-API-Key` work), and offset pagination can stop on a body `total_count` instead of probing one page past the end.
-- **Merge write mode.** DuckDB-family sinks (DuckDB, SQLite, DuckLake, MotherDuck) gain a **merge** mode that updates only the columns the source carries via `MERGE INTO`, preserving the columns it does not.
-- **MotherDuck polish.** The real MotherDuck brand mark, inline token applied via `SET` (no more device-login prompts), sinks that auto-create the target on first write, and Snowflake endpoint + MotherDuck upsert exposed in the property panel.
-- **Smarter auto-layout.** One-click tidy ranks nodes by dependency depth and spaces columns by node width, so connectors always have room.
-- **A new website and docs** at **[duckle.org](https://duckle.org)** - landing page, component and automation docs, a filterable integrations directory, and search-friendly metadata.
-- **Reliability.** A single corrupt workspace file no longer blocks the whole workspace, cold start opens the active account's workspace, the webhook source no longer drops requests on macOS, and attach-backed Parquet sources stay on the fast path under a reject split.
+- **DuckDB 1.5.4.** The bundled engine pins DuckDB 1.5.4, installs are version-aware (a `.installed-version` stamp means a bump re-fetches instead of leaving a stale binary), and the ARM64 Linux engine download is fixed.
+- **Upgrade in place, not reinstall.** An out-of-date engine keeps running and offers a one-click in-place upgrade from a dismissible banner instead of the blocking setup modal.
+- **In-app self-update.** "Update now" downloads the latest build for your OS, verifies it against the release `SHA256SUMS.txt`, swaps it over the running app, and restarts - no more hand-downloading new files. The banner's secondary action is now "View Changelog".
+- **Custom SQL read mode for more duck sources (#77).** DuckLake, MotherDuck, and Quack sources gain a Read mode choice of Whole table or Custom SQL (query the attached catalog as `duckle_src`), matching the DuckDB source.
+- **View materialize honored on duck-family sources (#76).** Materialize = View on an attach-backed source (DuckDB, DuckLake, MotherDuck, Quack, Iceberg, Delta) now sticks via a lazy path instead of silently becoming a table.
+- **Merge write mode in the app (#39).** The DuckDB-native Merge mode is now selectable for the DuckDB and SQLite sinks, matching the engine.
+- **Inline SQL routine fix (#78).** Picking a saved SQL routine now sticks and runs instead of reverting.
+- **Proxy support (#80).** REST and cloud-API connectors and the updater honor `DUCKLE_HTTPS_PROXY` / `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`, fixing direct-connect timeouts (os error 10060) on proxied networks. The run Output panel also scrolls now.
+- **Brand refresh.** A new orange accent (dark and light), a pixel-art "D" sloth logo and app icon, and a "Duckle by SlothFlowLabs" signature. The README and website clarify that Duckle is an independent, open-source project that is not affiliated with or endorsed by DuckDB Labs or MotherDuck.
 
-Full notes: see the [v0.4.0 release](https://github.com/ducklelabs/duckle/releases/tag/v0.4.0).
+Full notes: see the [v0.4.1 release](https://github.com/ducklelabs/duckle/releases/tag/v0.4.1).
 
 ---
 
@@ -425,7 +419,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/ducklelabs/duckle/releases/tag/v0.4.0):
+Pick the binary for your OS from the [latest release](https://github.com/ducklelabs/duckle/releases/tag/v0.4.1):
 
 | OS | Asset | How to run |
 |---|---|---|
