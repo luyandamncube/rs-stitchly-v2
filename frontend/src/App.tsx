@@ -1808,9 +1808,11 @@ export default function App() {
                 data-tauri-drag-region
             >
                 <div className="brand" data-tauri-drag-region>
-                    <DuckleLogo size={24} className="brand-logo" />
-                    <span className="brand-name">Duckle</span>
-                    <span className="brand-by">by Slothflow</span>
+                    <DuckleLogo size={26} className="brand-logo" />
+                    <span className="brand-text">
+                        <span className="brand-name">Duckle</span>
+                        <span className="brand-by">by Slothflow</span>
+                    </span>
                 </div>
                 <div className="topbar-sep" aria-hidden="true" />
                 <EngineSelector value={engine} onChange={setEngine} />

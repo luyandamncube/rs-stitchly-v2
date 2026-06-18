@@ -304,18 +304,24 @@ textarea:focus-visible {
     filter: drop-shadow(0 0 5px var(--accent-glow)) drop-shadow(0 0 2px var(--accent-soft));
 }
 
-/* "Duckle by Slothflow" wordmark + maker signature in the header. */
+/* "Duckle" wordmark with the "by Slothflow" maker signature stacked below it,
+   in an orange cursive style. */
+.brand-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.02;
+}
 .brand-name {
     font-weight: 700;
 }
 .brand-by {
-    font-size: 10px;
+    font-family: 'Segoe Script', 'Brush Script MT', cursive;
+    font-style: italic;
+    font-size: 11px;
     font-weight: 600;
-    opacity: 0.5;
-    margin-left: 5px;
-    align-self: flex-end;
-    padding-bottom: 3px;
+    color: var(--accent);
     white-space: nowrap;
+    margin-top: 1px;
 }
 
 /* The "D." mark colors follow the theme via the --logo-* tokens. */
