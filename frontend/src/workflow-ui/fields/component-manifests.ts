@@ -875,8 +875,9 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
                             { label: 'Append (insert)', value: 'append' },
                             { label: 'Truncate + insert', value: 'truncate' },
                             { label: 'Upsert (delete-by-key + re-insert)', value: 'upsert' },
+                            { label: 'Merge (update only provided columns)', value: 'merge' },
                         ],
-                        description: 'Upsert deletes rows matching the conflict columns, then re-inserts (issue #19).',
+                        description: 'Upsert deletes rows matching the conflict columns, then re-inserts (issue #19). Merge updates only the columns the source provides and inserts new rows, leaving other target columns untouched (issue #39).',
                     },
                     {
                         key: 'conflictColumns',
@@ -939,8 +940,9 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
                             { label: 'Append (insert)', value: 'append' },
                             { label: 'Truncate + insert', value: 'truncate' },
                             { label: 'Upsert (delete-by-key + re-insert)', value: 'upsert' },
+                            { label: 'Merge (update only provided columns)', value: 'merge' },
                         ],
-                        description: 'Upsert deletes rows matching the conflict columns, then re-inserts (issue #19).',
+                        description: 'Upsert deletes rows matching the conflict columns, then re-inserts (issue #19). Merge updates only the columns the source provides and inserts new rows, leaving other target columns untouched (issue #39).',
                     },
                     {
                         key: 'conflictColumns',
