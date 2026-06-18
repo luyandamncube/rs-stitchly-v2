@@ -586,6 +586,53 @@
     }
 
     #[test]
+    fn materialize_view_routes_duck_source_via_parquet() {
+        // issue #76: an explicit View on an ATTACH-backed duck source (here
+        // src.duckdb) must be honored - routed through the safe lazy
+        // read_parquet path - even with multiple consumers, instead of being
+        // silently downgraded to a CREATE TABLE. A control with the default
+        // "auto" + 2 consumers must stay a plain table (no parquet route).
+        let make = |materialize: &str| {
+            let mat = if materialize.is_empty() {
+                String::new()
+            } else {
+                format!(",\"materialize\":\"{}\"", materialize)
+            };
+            pipeline_from_json(&format!(
+                r#"{{
+                  "nodes": [
+                    {{"id":"s1","position":{{"x":0,"y":0}},"data":{{
+                      "label":"Duck","componentId":"src.duckdb",
+                      "properties":{{"database":"/tmp/src.duckdb","tableName":"orders"{}}}}}}},
+                    {{"id":"k1","position":{{"x":0,"y":0}},"data":{{
+                      "label":"A","componentId":"snk.parquet","properties":{{"path":"/tmp/a.parquet"}}}}}},
+                    {{"id":"k2","position":{{"x":0,"y":0}},"data":{{
+                      "label":"B","componentId":"snk.parquet","properties":{{"path":"/tmp/b.parquet"}}}}}}
+                  ],
+                  "edges": [
+                    {{"id":"e1","source":"s1","target":"k1","data":{{"connectionType":"main"}}}},
+                    {{"id":"e2","source":"s1","target":"k2","data":{{"connectionType":"main"}}}}
+                  ]
+                }}"#,
+                mat
+            ))
+        };
+        let view_c = compile(&make("view")).unwrap();
+        let view_src = view_c.stages.iter().find(|s| s.node_id == "s1").expect("src stage");
+        assert!(
+            matches!(view_src.runtime.as_ref(), Some(RuntimeSpec::AttachParquetSource(_))),
+            "materialize=view on a duck source must route through the parquet path, got sql: {}",
+            view_src.sql
+        );
+        let auto_c = compile(&make("")).unwrap();
+        let auto_src = auto_c.stages.iter().find(|s| s.node_id == "s1").expect("src stage");
+        assert!(
+            !matches!(auto_src.runtime.as_ref(), Some(RuntimeSpec::AttachParquetSource(_))),
+            "auto with 2 consumers must stay a table for a local-file duck source (no regression)"
+        );
+    }
+
+    #[test]
     fn materialize_duckdb_temp_routes_to_duckdb_spec_without_path() {
         // materialize=duckdb persists the stage into a temp DuckDB file (no
         // user path).

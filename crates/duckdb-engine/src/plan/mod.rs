@@ -3165,6 +3165,28 @@ fn build_stage(
                 body: body.to_string(),
             });
         }
+        // Explicit "view" on an ATTACH-backed source (the duck family:
+        // duckdb / ducklake / motherduck / quack / iceberg / delta plus the
+        // relational DBs). A true lazy VIEW over the process-local duckle_src
+        // alias (or a scan-fn that needs an extension LOAD) breaks in a
+        // downstream stage that never ran the ATTACH/LOAD, so view_ok forces
+        // these to a TABLE and the explicit choice was silently dropped
+        // (issue #76). Honor it with the only process-safe lazy form: COPY
+        // once to a temp parquet and expose a read_parquet VIEW (which also
+        // gives the downstream projection / predicate pushdown the user wants),
+        // at ANY consumer count and even for the local-file attaches the
+        // single-consumer fast path above deliberately skips.
+        if materialize == "view"
+            && attach_backed
+            && attach_parquet_source.is_none()
+            && reject_sql.is_none()
+        {
+            attach_parquet_source = Some(AttachParquetSourceSpec {
+                node_id: node.id.clone(),
+                attach: attach.to_string(),
+                body: body.to_string(),
+            });
+        }
         // Materialize = "disk": stream this stage through a temp parquet file
         // (COPY ... TO parquet, then a read_parquet VIEW) instead of inserting
         // into the run-db table - minimal RAM, built for huge intermediates.
