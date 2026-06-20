@@ -4222,32 +4222,106 @@ impl DuckdbEngine {
                 "js: script must define a global `transform` function".into(),
             ));
         }
+        // BigInt-preserving marshalling. boa's JsValue::from_json/to_json clamp
+        // integers to i32 and demote the rest to f64, so a 64-bit id (e.g. a
+        // Snowflake key) is silently corrupted even by an identity `return row`.
+        // Instead we marshal through JS's own JSON.parse/stringify with a marker:
+        // integers outside i32 range are tagged so JS parses them as BigInt and
+        // serializes them back exactly; the rest is ordinary JSON.
+        const BI_MARK: &str = "\u{0}BI\u{0}";
+        fn mark_bigints(v: &JsonValue) -> JsonValue {
+            match v {
+                JsonValue::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        if !(i32::MIN as i64..=i32::MAX as i64).contains(&i) {
+                            return JsonValue::String(format!("{}{}", BI_MARK, i));
+                        }
+                    } else if let Some(u) = n.as_u64() {
+                        return JsonValue::String(format!("{}{}", BI_MARK, u));
+                    }
+                    v.clone()
+                }
+                JsonValue::Array(a) => JsonValue::Array(a.iter().map(mark_bigints).collect()),
+                JsonValue::Object(m) => {
+                    JsonValue::Object(m.iter().map(|(k, val)| (k.clone(), mark_bigints(val))).collect())
+                }
+                _ => v.clone(),
+            }
+        }
+        fn unmark_bigints(v: JsonValue) -> JsonValue {
+            match v {
+                JsonValue::String(s) if s.starts_with(BI_MARK) => s[BI_MARK.len()..]
+                    .parse::<serde_json::Number>()
+                    .map(JsonValue::Number)
+                    .unwrap_or(JsonValue::String(s)),
+                JsonValue::Array(a) => JsonValue::Array(a.into_iter().map(unmark_bigints).collect()),
+                JsonValue::Object(m) => {
+                    JsonValue::Object(m.into_iter().map(|(k, val)| (k, unmark_bigints(val))).collect())
+                }
+                other => other,
+            }
+        }
+        ctx.eval(Source::from_bytes(
+            "globalThis.__duckle_M='\\u0000BI\\u0000';\
+             globalThis.__duckle_parse=function(s){return JSON.parse(s,function(k,v){return (typeof v==='string'&&v.indexOf(globalThis.__duckle_M)===0)?BigInt(v.slice(globalThis.__duckle_M.length)):v;});};\
+             globalThis.__duckle_ser=function(v){return JSON.stringify(v,function(k,val){return (typeof val==='bigint')?(globalThis.__duckle_M+val.toString()):val;});};",
+        ))
+        .map_err(|e| EngineError::Query(format!("js: marshaller setup: {}", e)))?;
+        let parse_fn = ctx
+            .global_object()
+            .get(js_string!("__duckle_parse"), &mut ctx)
+            .map_err(|e| EngineError::Query(format!("js: parse fn: {}", e)))?;
+        let ser_fn = ctx
+            .global_object()
+            .get(js_string!("__duckle_ser"), &mut ctx)
+            .map_err(|e| EngineError::Query(format!("js: ser fn: {}", e)))?;
+
         let mut out: Vec<JsonValue> = Vec::with_capacity(rows.len());
         for row in rows.iter() {
             self.check_cancelled()?;
-            // JSON -> JsValue
-            let js_in = boa_engine::JsValue::from_json(row, &mut ctx).map_err(|e| {
-                EngineError::Query(format!("js: row -> JsValue: {}", e))
-            })?;
+            // JSON -> JsValue: mark large ints, let JS parse them as BigInt.
+            let s = serde_json::to_string(&mark_bigints(row)).unwrap_or_else(|_| "null".to_string());
+            let js_in = parse_fn
+                .as_callable()
+                .ok_or_else(|| EngineError::Query("js: marshaller missing".into()))?
+                .call(
+                    &boa_engine::JsValue::Undefined,
+                    &[boa_engine::JsValue::from(js_string!(s.as_str()))],
+                    &mut ctx,
+                )
+                .map_err(|e| EngineError::Query(format!("js: row -> JsValue: {}", e)))?;
             let result = transform
                 .as_callable()
                 .ok_or_else(|| EngineError::Query("js: transform not callable".into()))?
                 .call(&boa_engine::JsValue::Undefined, &[js_in], &mut ctx)
                 .map_err(|e| EngineError::Query(format!("js: transform call: {}", e)))?;
-            // JsValue -> JSON (only objects make sense as rows). Guard the
-            // value's shape BEFORE calling to_json: boa's to_json PANICS
-            // (aborting the whole process) on Undefined, so a transform
-            // that falls off the end with no return value would crash the
-            // run instead of surfacing a clean error.
+            // Guard the value's shape BEFORE serializing: a transform that
+            // returns nothing (undefined) or null is a programming error.
             if result.is_undefined() || result.is_null() {
                 return Err(EngineError::Query(format!(
                     "js: transform must return an object, got {} (did the function return a value?)",
                     if result.is_undefined() { "undefined" } else { "null" }
                 )));
             }
-            let json_out = result.to_json(&mut ctx).map_err(|e| {
-                EngineError::Query(format!("js: result -> JSON: {}", e))
-            })?;
+            // JsValue -> JSON: stringify in JS (BigInt -> marker), un-mark here.
+            let ser = ser_fn
+                .as_callable()
+                .ok_or_else(|| EngineError::Query("js: marshaller missing".into()))?
+                .call(&boa_engine::JsValue::Undefined, &[result], &mut ctx)
+                .map_err(|e| EngineError::Query(format!("js: result -> JSON: {}", e)))?;
+            let json_out = match ser.as_string() {
+                Some(js) => {
+                    let text = js.to_std_string_escaped();
+                    let parsed: JsonValue = serde_json::from_str(&text)
+                        .map_err(|e| EngineError::Query(format!("js: result -> JSON: {}", e)))?;
+                    unmark_bigints(parsed)
+                }
+                None => {
+                    return Err(EngineError::Query(
+                        "js: transform must return an object".into(),
+                    ))
+                }
+            };
             if !json_out.is_object() {
                 return Err(EngineError::Query(format!(
                     "js: transform must return an object, got: {}",

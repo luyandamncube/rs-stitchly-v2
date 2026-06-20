@@ -8235,6 +8235,30 @@ fn code_javascript_runs_transform_per_row_via_boa() {
     assert_eq!(name1, "WIDGET");
 }
 
+/// Regression: boa's JsValue::from_json/to_json clamped integers to i32 and
+/// demoted the rest to f64, so a 64-bit id (e.g. a Snowflake key) was corrupted
+/// (1350000000000000001 -> 1.35e18) even by an identity transform. The
+/// BigInt-marker marshaller keeps it exact.
+#[test]
+fn code_javascript_preserves_bigint_ids() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let in_csv = write_file(tmp.path(), "in.csv", "id\n1350000000000000001\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let script = r#"function transform(row) { return row; }"#;
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": in_csv, "hasHeader": true })),
+            node("j", "code.javascript", json!({ "script": script })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "j"), main_edge("e2", "j", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "code.javascript failed: {:?}", r.error);
+    let id = scalar_string(&format!("SELECT CAST(id AS VARCHAR) FROM read_csv_auto('{}')", out));
+    assert_eq!(id, "1350000000000000001", "64-bit id must survive the JS bridge exactly");
+}
+
 #[test]
 fn code_javascript_undefined_return_errors_not_panics() {
     // Regression: a transform that returns nothing (undefined) used to
