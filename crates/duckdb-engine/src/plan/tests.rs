@@ -1225,6 +1225,78 @@
     }
 
     #[test]
+    fn profile_adv_builds_metric_value_long_form() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["up".into()]);
+        let sql = build_profile_adv(&ni, &serde_json::json!({ "column": "email", "topN": 3 })).unwrap();
+        assert!(sql.contains("SELECT CAST(\"email\" AS VARCHAR) AS v FROM \"up\""), "got: {}", sql);
+        assert!(sql.contains("approx_count_distinct(v) AS distinct_n"), "got: {}", sql);
+        assert!(sql.contains("regexp_full_match(v, '^-?[0-9]+$')"), "int pattern: {}", sql);
+        assert!(sql.contains("GROUP BY v ORDER BY freq DESC, v LIMIT 3"), "top-n: {}", sql);
+        assert!(sql.contains("SELECT \"metric\", \"value\", \"count\", \"pct\" FROM ("), "shape: {}", sql);
+        let def = build_profile_adv(&ni, &serde_json::json!({ "column": "x" })).unwrap();
+        assert!(def.contains("LIMIT 10"), "default top-n: {}", def);
+        assert!(build_profile_adv(&ni, &serde_json::json!({ "column": "x", "topN": 99999 })).unwrap().contains("LIMIT 1000"));
+        assert!(build_profile_adv(&ni, &serde_json::json!({})).is_err());
+        assert!(build_profile_adv(&NodeInputs::default(), &serde_json::json!({ "column": "x" })).is_err());
+    }
+
+    #[test]
+    fn link_builds_cross_join_over_two_inputs() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["m1".into()]);
+        ni.ports.insert("lookup".into(), vec!["r1".into()]);
+        let sql = build_record_link(&ni, &serde_json::json!({ "leftKey": "name", "rightKey": "company" })).unwrap();
+        assert!(sql.contains("FROM \"m1\"") && sql.contains("FROM \"r1\""), "got: {}", sql);
+        assert!(sql.contains("CROSS JOIN"), "got: {}", sql);
+        assert!(sql.contains("jaro_winkler_similarity(a._key, b._key)"), "got: {}", sql);
+        assert!(sql.contains(">= 0.85"), "got: {}", sql);
+        assert!(sql.contains("a._show AS left_key") && sql.contains("b._show AS right_key"), "got: {}", sql);
+        let lev = build_record_link(&ni, &serde_json::json!({"leftColumns":["first","last"],"rightColumns":["fname","lname"],"algorithm":"levenshtein","threshold":0.7})).unwrap();
+        assert!(lev.contains("levenshtein(a._key, b._key)"), "got: {}", lev);
+        assert!(lev.contains("concat_ws(' ', \"first\", \"last\")"), "got: {}", lev);
+        let mut no_ref = NodeInputs::default();
+        no_ref.ports.insert("main".into(), vec!["m1".into()]);
+        assert!(build_record_link(&no_ref, &serde_json::json!({"leftKey":"a","rightKey":"b"})).is_err());
+        assert!(build_record_link(&ni, &serde_json::json!({ "rightKey": "company" })).is_err());
+    }
+
+    #[test]
+    fn reconcile_builds_full_outer_join_report() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["m1".into()]);
+        ni.ports.insert("lookup".into(), vec!["r1".into()]);
+        let sql = build_reconcile(&ni, &serde_json::json!({ "keyColumns": ["id"], "measureColumns": ["amount"] })).unwrap();
+        assert!(sql.contains("FULL OUTER JOIN \"__r\" ON \"__m\".\"id\" IS NOT DISTINCT FROM \"__r\".\"id\""), "got: {}", sql);
+        assert!(sql.contains("'source_rows' AS metric"), "got: {}", sql);
+        assert!(sql.contains("'amount_difference', CAST((SELECT SUM(\"amount\") FROM \"__m\") AS DOUBLE) - CAST((SELECT SUM(\"amount\") FROM \"__r\") AS DOUBLE)"), "got: {}", sql);
+        let composite = build_reconcile(&ni, &serde_json::json!({ "keyColumns": ["region", "id"] })).unwrap();
+        assert!(composite.contains("\"__m\".\"region\" IS NOT DISTINCT FROM \"__r\".\"region\" AND \"__m\".\"id\" IS NOT DISTINCT FROM \"__r\".\"id\""), "got: {}", composite);
+        assert!(!composite.contains("_source_sum"), "no measures means no sum metrics: {}", composite);
+        assert!(build_reconcile(&ni, &serde_json::json!({ "measureColumns": ["amount"] })).is_err());
+    }
+
+    #[test]
+    fn classify_builds_pii_report_sql() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["up".into()]);
+        let all = build_classify(&ni, &serde_json::json!({})).unwrap();
+        assert!(all.contains("SELECT COLUMNS(*)::VARCHAR FROM \"up\""), "got: {}", all);
+        assert!(all.contains("UNPIVOT INCLUDE NULLS (col_val FOR col_name IN (COLUMNS(*)))"), "got: {}", all);
+        assert!(all.contains("n_email / NULLIF(sample_count, 0) AS r_email"), "got: {}", all);
+        assert!(all.contains("GREATEST(COALESCE(r_email, 0)"), "got: {}", all);
+        assert!(all.contains("CASE WHEN best_rate < 0.8 THEN 'text'"), "got: {}", all);
+        assert!(all.contains("WHEN r_email = best_rate THEN 'email'"), "got: {}", all);
+        assert!(all.contains("detected_type IN ('email', 'ssn', 'uuid', 'ipv4', 'credit_card', 'phone') AS is_pii"), "got: {}", all);
+        let some = build_classify(&ni, &serde_json::json!({"columns": ["email", "ssn"]})).unwrap();
+        assert!(some.contains("CAST(\"email\" AS VARCHAR) AS \"email\""), "got: {}", some);
+        assert!(!some.contains("COLUMNS(*)::VARCHAR"), "explicit columns must not melt all: {}", some);
+        let clamp = build_classify(&ni, &serde_json::json!({"threshold": 5})).unwrap();
+        assert!(clamp.contains("CASE WHEN best_rate < 1 THEN 'text'"), "got: {}", clamp);
+        assert!(build_classify(&NodeInputs::default(), &serde_json::json!({})).is_err());
+    }
+
+    #[test]
     fn csv_declared_schema_overrides_autodetect() {
         // Regression for issue #3: when the user sets a column to
         // VARCHAR in the Schema panel (typical fix for dd/mm/yy dates

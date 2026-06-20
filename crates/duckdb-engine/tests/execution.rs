@@ -8348,6 +8348,124 @@ fn refintegrity_routes_orphans_to_reject() {
     assert_eq!(bad, 0, "no orphan should leak into the pass output");
 }
 
+/// qa.profile.adv: rich single-column profile - top-N value + email pattern %.
+#[test]
+fn profile_adv_topn_and_pattern_fraction_live() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "email\nalice@x.com\nbob@y.com\nalice@x.com\ncarol@z.org\nalice@x.com\nbob@y.com\n\nnot-an-email\ndave@w.io\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("p1", "qa.profile.adv", json!({ "column": "email", "topN": 3 })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "p1"), main_edge("e2", "p1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let top = scalar_string(&format!(
+        "SELECT \"value\" FROM read_csv_auto('{}') WHERE \"metric\" = 'top_value' ORDER BY \"count\" DESC LIMIT 1",
+        out
+    ));
+    assert_eq!(top, "alice@x.com", "got {}", top);
+    let email_pct = scalar_string(&format!(
+        "SELECT CAST(\"pct\" AS VARCHAR) FROM read_csv_auto('{}') WHERE \"metric\" = 'pattern_email'",
+        out
+    ));
+    assert_eq!(email_pct, "87.5", "got {}", email_pct);
+    let nulls = scalar_string(&format!(
+        "SELECT CAST(\"count\" AS VARCHAR) FROM read_csv_auto('{}') WHERE \"metric\" = 'null_count'",
+        out
+    ));
+    assert_eq!(nulls, "1", "got {}", nulls);
+}
+
+/// qa.link: fuzzy record linkage across two inputs by company name.
+#[test]
+fn link_matches_two_inputs_with_scores() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write_file(tmp.path(), "main.csv", "cust_id,name\n1,Acme Inc\n2,Globex Corporation\n3,Initech\n");
+    let reference = write_file(tmp.path(), "ref.csv", "ref_id,company\nA,Acme Incorporated\nB,Globex Corp\nC,Umbrella\n");
+    let out = out_path(tmp.path(), "links.csv");
+    let d = doc(
+        json!([
+            node("m", "src.csv", json!({ "path": main, "hasHeader": true })),
+            node("r", "src.csv", json!({ "path": reference, "hasHeader": true })),
+            node("lk", "qa.link", json!({ "leftColumns": ["name"], "rightColumns": ["company"], "threshold": 0.85, "algorithm": "jaro-winkler" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "m", "lk"), lookup_edge("e2", "r", "lk"), main_edge("e3", "lk", "k")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let acme_right = scalar_string(&format!("SELECT right_key FROM read_csv_auto('{}') WHERE left_key = 'Acme Inc'", out));
+    assert_eq!(acme_right, "Acme Incorporated", "got {}", acme_right);
+    let below = count(&format!("read_csv_auto('{}') WHERE score < 0.85", out));
+    assert_eq!(below, 0, "no sub-threshold pair leaks in");
+}
+
+/// qa.reconcile: source-vs-target report with a missing key each side + a sum gap.
+#[test]
+fn reconcile_reports_source_vs_target_live() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let source = write_file(tmp.path(), "source.csv", "id,amount\n1,100\n2,200\n3,300\n4,400\n");
+    let target = write_file(tmp.path(), "target.csv", "id,amount\n1,100\n2,250\n3,300\n5,500\n");
+    let out = out_path(tmp.path(), "report.csv");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": source, "hasHeader": true })),
+            node("t", "src.csv", json!({ "path": target, "hasHeader": true })),
+            node("rc", "qa.reconcile", json!({ "keyColumns": ["id"], "measureColumns": ["amount"] })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "rc"), lookup_edge("e2", "t", "rc"), main_edge("e3", "rc", "k")]),
+    );
+    let r = engine.execute_pipeline(&d);
+    assert_eq!(r.status, "ok", "qa.reconcile failed: {:?}", r.error);
+    let m = |name: &str| scalar_string(&format!("SELECT \"value\" FROM read_csv_auto('{}') WHERE \"metric\" = '{}'", out, name));
+    assert_eq!(m("rows_only_in_source"), "1.0", "key 4 only in source");
+    assert_eq!(m("rows_only_in_target"), "1.0", "key 5 only in target");
+    assert_eq!(m("keys_matched"), "3.0", "keys 1,2,3 matched");
+    assert_eq!(m("amount_difference"), "-150.0", "source minus target");
+}
+
+/// qa.classify: heuristic PII classification - email/ssn detected, note is text.
+#[test]
+fn classify_detects_email_and_ssn_live() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "email,ssn,note\nalice@example.com,123-45-6789,hello world\nbob@test.org,987-65-4321,foo bar baz\ncarol@foo.io,555-11-2222,plain text here\n",
+    );
+    let out = out_path(tmp.path(), "report.csv");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("c", "qa.classify", json!({})),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "c"), main_edge("e2", "c", "k")]),
+    );
+    let r = engine.execute_pipeline(&d);
+    assert_eq!(r.status, "ok", "qa.classify failed: {:?}", r.error);
+    let typ = |col: &str| scalar_string(&format!("SELECT detected_type FROM read_csv_auto('{}') WHERE \"column\" = '{}'", out, col));
+    assert_eq!(typ("email"), "email", "email column");
+    assert_eq!(typ("ssn"), "ssn", "ssn column");
+    assert_eq!(typ("note"), "text", "free text");
+    let pii_cols = count(&format!("read_csv_auto('{}') WHERE is_pii = true", out));
+    assert_eq!(pii_cols, 2, "email + ssn are PII; note is not");
+}
+
 /// qa.matchgroup: transitive-closure clustering of matched record pairs. a~b
 /// and b~c collapse a, b, c into one cluster (rep = MIN id); a self-matched d
 /// stays its own cluster.

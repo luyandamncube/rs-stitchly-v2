@@ -651,6 +651,7 @@ export const PALETTE: Category[] = [
                 label: 'Profiling',
                 components: [
                     qa('profile', 'Column Profile', 'available', 'Per-column stats: count, nulls, distinct, min/max, quartiles'),
+                    qa('profile.adv', 'Column Profile (Advanced)', 'available', 'Rich single-column profile: count, null_count, null_pct, approx distinct, min/max, the fraction of values matching common patterns (email / integer / decimal / date), and the top-N most frequent values with counts. Long-form output: one row per metric (metric, value, count, pct).'),
                     qa('describe', 'Describe', 'available', 'Column names and types of the input'),
                     qa('histogram', 'Histogram', 'available', 'Value frequencies for a column'),
                 ],
@@ -668,6 +669,9 @@ export const PALETTE: Category[] = [
                     qa('expect', 'Expectations', 'available', 'Run a reusable suite of data-quality expectations (not-null, unique, in-set, in-range, regex, non-negative) and emit a scorecard: one row per rule with total, failed, pass_rate, and passed. The native, no-Python answer to declarative data contracts.'),
                     qa('sample.adv', 'Sample (Reproducible %)', 'available', 'Take a percentage sample of rows. Reservoir (even per-row probability) or Bernoulli (independent per row); set a seed to make the draw reproducible so the same rows are picked every run. All columns are preserved.'),
                     qa('refintegrity', 'Referential Integrity', 'available', 'Check a foreign key against a reference input (connect it to the lookup port): rows whose key exists in the reference pass through, orphan rows (key missing) route to the reject port. Pure semi-join / anti-join, no row fan-out on duplicate reference keys.'),
+                    qa('link', 'Record Linkage', 'available', 'Fuzzy-link records across TWO inputs: the main input against a reference on the lookup port. Cross-compares the chosen key columns by string similarity (Jaro-Winkler or Levenshtein) and emits every candidate pair at or above the threshold as left_key, right_key, score. Unlike Record Match (self-join), this links two separate datasets.'),
+                    qa('reconcile', 'Reconcile (Source vs Target)', 'available', 'Two-source reconciliation report for migrations and CDC QA. Main input is the source; connect the target to the lookup port. Joins on your key column(s) and emits one row per metric: source_rows, target_rows, rows_only_in_source, rows_only_in_target, keys_matched, plus per measure a source_sum / target_sum / difference.'),
+                    qa('classify', 'Classify / PII Detect', 'available', 'Heuristically classify each column by semantic / PII type - pure regex + statistics, no model. Measures the fraction of values matching known shapes (email, SSN, credit card, IPv4, UUID, URL, phone, date) and tags the best match above a threshold. Emits a report (column, detected_type, match_rate, sample_count, is_pii); pair it with Mask / Anonymize.'),
                     qa('addressclean', 'Address Cleanse', 'planned'),
                 ],
             },

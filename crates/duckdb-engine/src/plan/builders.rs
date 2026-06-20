@@ -149,6 +149,10 @@ pub(crate) fn build_view_sql(
         "qa.expect" => build_expect(inputs, props),
         "qa.sample.adv" => build_sample_adv(inputs, props),
         "qa.refintegrity" => build_refintegrity(inputs, props, false),
+        "qa.profile.adv" => build_profile_adv(inputs, props),
+        "qa.link" => build_record_link(inputs, props),
+        "qa.reconcile" => build_reconcile(inputs, props),
+        "qa.classify" => build_classify(inputs, props),
         "qa.dedupe" => build_fuzzy_dedupe(inputs, props),
         "qa.match" => build_record_match(inputs, props),
         "xf.reorder" => build_reorder(inputs, props),
@@ -2285,6 +2289,220 @@ pub(crate) fn build_refintegrity(
     } else {
         format!("SELECT {m}.* FROM {m} WHERE {exists}", m = m, exists = exists)
     })
+}
+
+/// qa.profile.adv: a rich single-column data profile (deeper than SUMMARIZE).
+/// For one chosen column it emits a long-form metric/value relation: count,
+/// null_count, null_pct, distinct (approx_count_distinct), min, max, the
+/// fraction of non-null values matching common patterns (email / integer /
+/// decimal / date via regexp_full_match), and the top-N most frequent values
+/// with their counts. Output columns: metric, value, count, pct. Pure SQL.
+pub(crate) fn build_profile_adv(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.profile.adv"))?;
+    let col = string_prop(props, "column")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Column Profile (Advanced) needs a column to profile".to_string())?;
+    let top_n = num_prop(props, "topN")
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|n| n as i64)
+        .unwrap_or(10)
+        .clamp(1, 1000);
+    let q = quote_ident(&col);
+    let col_lit = sql_escape(&col);
+    let re_email = r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$";
+    let re_int = r"^-?[0-9]+$";
+    let re_dec = r"^-?[0-9]*\.[0-9]+$";
+    let re_date = r"^\d{4}-\d{2}-\d{2}$";
+    Ok(format!(
+        "WITH __src AS (SELECT CAST({q} AS VARCHAR) AS v FROM {up}), \
+         __agg AS (SELECT COUNT(*) AS total, \
+         COUNT(*) FILTER (WHERE v IS NULL) AS null_n, \
+         approx_count_distinct(v) AS distinct_n, MIN(v) AS min_v, MAX(v) AS max_v, \
+         COUNT(*) FILTER (WHERE v IS NOT NULL) AS nonnull, \
+         COUNT(*) FILTER (WHERE v IS NOT NULL AND regexp_full_match(v, '{re_email}')) AS email_n, \
+         COUNT(*) FILTER (WHERE v IS NOT NULL AND regexp_full_match(v, '{re_int}')) AS int_n, \
+         COUNT(*) FILTER (WHERE v IS NOT NULL AND regexp_full_match(v, '{re_dec}')) AS dec_n, \
+         COUNT(*) FILTER (WHERE v IS NOT NULL AND regexp_full_match(v, '{re_date}')) AS date_n \
+         FROM __src), \
+         __topn AS (SELECT v AS val, COUNT(*) AS freq FROM __src WHERE v IS NOT NULL \
+         GROUP BY v ORDER BY freq DESC, v LIMIT {top_n}) \
+         SELECT \"metric\", \"value\", \"count\", \"pct\" FROM (\
+         SELECT 'column' AS \"metric\", '{col_lit}' AS \"value\", NULL::BIGINT AS \"count\", NULL::DOUBLE AS \"pct\", 0 AS \"_ord\" \
+         UNION ALL SELECT 'count', CAST(total AS VARCHAR), total, 100.0, 1 FROM __agg \
+         UNION ALL SELECT 'null_count', CAST(null_n AS VARCHAR), null_n, ROUND(100.0*null_n/NULLIF(total,0),4), 2 FROM __agg \
+         UNION ALL SELECT 'null_pct', CAST(ROUND(100.0*null_n/NULLIF(total,0),4) AS VARCHAR)||'%', null_n, ROUND(100.0*null_n/NULLIF(total,0),4), 3 FROM __agg \
+         UNION ALL SELECT 'distinct_approx', CAST(distinct_n AS VARCHAR), distinct_n, NULL, 4 FROM __agg \
+         UNION ALL SELECT 'min', min_v, NULL, NULL, 5 FROM __agg \
+         UNION ALL SELECT 'max', max_v, NULL, NULL, 6 FROM __agg \
+         UNION ALL SELECT 'pattern_email', CAST(ROUND(100.0*email_n/NULLIF(nonnull,0),4) AS VARCHAR)||'%', email_n, ROUND(100.0*email_n/NULLIF(nonnull,0),4), 7 FROM __agg \
+         UNION ALL SELECT 'pattern_integer', CAST(ROUND(100.0*int_n/NULLIF(nonnull,0),4) AS VARCHAR)||'%', int_n, ROUND(100.0*int_n/NULLIF(nonnull,0),4), 8 FROM __agg \
+         UNION ALL SELECT 'pattern_decimal', CAST(ROUND(100.0*dec_n/NULLIF(nonnull,0),4) AS VARCHAR)||'%', dec_n, ROUND(100.0*dec_n/NULLIF(nonnull,0),4), 9 FROM __agg \
+         UNION ALL SELECT 'pattern_date', CAST(ROUND(100.0*date_n/NULLIF(nonnull,0),4) AS VARCHAR)||'%', date_n, ROUND(100.0*date_n/NULLIF(nonnull,0),4), 10 FROM __agg \
+         UNION ALL SELECT 'top_value', __topn.val, __topn.freq, ROUND(100.0*__topn.freq/NULLIF((SELECT total FROM __agg),0),4), 11 FROM __topn\
+         ) ORDER BY \"_ord\", \"count\" DESC NULLS LAST, \"value\"",
+        q = q,
+        up = quote_ident(upstream),
+        re_email = re_email,
+        re_int = re_int,
+        re_dec = re_dec,
+        re_date = re_date,
+        top_n = top_n,
+        col_lit = col_lit,
+    ))
+}
+
+/// Comparison-key pair (show expr, lowered match key) for one side of a record
+/// linkage join: a multi-column list (multi_key) or single column (single_key).
+fn link_key(props: &JsonValue, multi_key: &str, single_key: &str, alias: &str) -> Result<(String, String), String> {
+    let mut cols = columns_list(props, multi_key);
+    if cols.is_empty() {
+        if let Some(c) = string_prop(props, single_key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            cols.push(c);
+        }
+    }
+    if cols.is_empty() {
+        return Err(format!("Record Linkage needs the {alias} compare column(s) ({multi_key} or {single_key})"));
+    }
+    let list = cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+    Ok((format!("concat_ws(' ', {})", list), format!("lower(concat_ws(' ', {}))", list)))
+}
+
+/// qa.link: fuzzy record LINKAGE across TWO inputs (main = left, lookup port =
+/// right). Builds a key per side, cross-joins, and keeps every candidate pair
+/// whose string similarity meets the threshold (jaro-winkler default, or
+/// levenshtein). Single output: left_key, right_key, score. Unlike qa.match
+/// (self-join), this links two separate datasets.
+pub(crate) fn build_record_link(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let main = inputs.main().ok_or_else(|| missing_input_msg("qa.link"))?;
+    let reference = inputs.first_lookup().ok_or_else(|| {
+        "Record Linkage needs a reference input (connect the lookup port to the table to link against)".to_string()
+    })?;
+    let (left_show, left_key) = link_key(props, "leftColumns", "leftKey", "left (main)")?;
+    let (right_show, right_key) = link_key(props, "rightColumns", "rightKey", "right (reference)")?;
+    let (score, threshold) = similarity(props);
+    Ok(format!(
+        "WITH a AS (SELECT {ls} AS _show, {lk} AS _key FROM {m}), \
+         b AS (SELECT {rs} AS _show, {rk} AS _key FROM {r}) \
+         SELECT a._show AS left_key, b._show AS right_key, round({score}, 4) AS score \
+         FROM a CROSS JOIN b WHERE {score} >= {threshold} ORDER BY score DESC, left_key, right_key",
+        ls = left_show,
+        lk = left_key,
+        rs = right_show,
+        rk = right_key,
+        m = quote_ident(main),
+        r = quote_ident(reference),
+        score = score,
+        threshold = threshold,
+    ))
+}
+
+/// qa.reconcile: two-source reconciliation report (source-vs-target validation
+/// for migrations / CDC QA). Main = source, lookup port = target. Emits one row
+/// per metric (metric, value): source_rows, target_rows, rows_only_in_source,
+/// rows_only_in_target, keys_matched, plus per measure source_sum/target_sum/
+/// difference. FULL OUTER JOIN on the keys (NULL-safe) + independent COUNT/SUM.
+pub(crate) fn build_reconcile(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let main = inputs.main().ok_or_else(|| missing_input_msg("qa.reconcile"))?;
+    let reference = inputs.first_lookup().ok_or_else(|| {
+        "Reconcile needs a target input (connect the lookup port to the target table to compare against)".to_string()
+    })?;
+    let keys = columns_list(props, "keyColumns");
+    if keys.is_empty() {
+        return Err("Reconcile needs at least one key column (keyColumns) to join source and target on".to_string());
+    }
+    let measures = columns_list(props, "measureColumns");
+    let m = quote_ident(main);
+    let r = quote_ident(reference);
+    let on = keys
+        .iter()
+        .map(|k| {
+            let q = quote_ident(k);
+            format!("\"__m\".{q} IS NOT DISTINCT FROM \"__r\".{q}", q = q)
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let mut rows: Vec<String> = Vec::new();
+    rows.push("SELECT 'source_rows' AS metric, CAST((SELECT COUNT(*) FROM \"__m\") AS DOUBLE) AS value".to_string());
+    rows.push("SELECT 'target_rows', CAST((SELECT COUNT(*) FROM \"__r\") AS DOUBLE)".to_string());
+    rows.push("SELECT 'rows_only_in_source', CAST((SELECT COUNT(*) FROM \"__j\" WHERE \"__m_present\" AND \"__r_present\" IS NULL) AS DOUBLE)".to_string());
+    rows.push("SELECT 'rows_only_in_target', CAST((SELECT COUNT(*) FROM \"__j\" WHERE \"__r_present\" AND \"__m_present\" IS NULL) AS DOUBLE)".to_string());
+    rows.push("SELECT 'keys_matched', CAST((SELECT COUNT(*) FROM \"__j\" WHERE \"__m_present\" AND \"__r_present\") AS DOUBLE)".to_string());
+    for col in &measures {
+        let q = quote_ident(col);
+        let lbl = sql_escape(col);
+        rows.push(format!("SELECT '{lbl}_source_sum', CAST((SELECT SUM({q}) FROM \"__m\") AS DOUBLE)", lbl = lbl, q = q));
+        rows.push(format!("SELECT '{lbl}_target_sum', CAST((SELECT SUM({q}) FROM \"__r\") AS DOUBLE)", lbl = lbl, q = q));
+        rows.push(format!("SELECT '{lbl}_difference', CAST((SELECT SUM({q}) FROM \"__m\") AS DOUBLE) - CAST((SELECT SUM({q}) FROM \"__r\") AS DOUBLE)", lbl = lbl, q = q));
+    }
+    Ok(format!(
+        "WITH \"__m\" AS (SELECT *, TRUE AS \"__present\" FROM {m}), \
+         \"__r\" AS (SELECT *, TRUE AS \"__present\" FROM {r}), \
+         \"__j\" AS (SELECT \"__m\".\"__present\" AS \"__m_present\", \"__r\".\"__present\" AS \"__r_present\" \
+         FROM \"__m\" FULL OUTER JOIN \"__r\" ON {on}) {rows}",
+        m = m,
+        r = r,
+        on = on,
+        rows = rows.join(" UNION ALL ")
+    ))
+}
+
+/// qa.classify: heuristic column classification / PII tagging - NO LLM, pure
+/// regex + stats. Per selected column (props columns, or all) it measures the
+/// fraction of non-null values matching known shapes (email/ssn/credit_card/
+/// ipv4/uuid/url/phone/date), tags the best match above a threshold (else
+/// text), and emits a report: column, detected_type, match_rate, sample_count,
+/// is_pii. Drives governance auto-masking (pairs with qa.mask).
+pub(crate) fn build_classify(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.classify"))?;
+    let threshold = props.get("threshold").and_then(JsonValue::as_f64).unwrap_or(0.8).clamp(0.0, 1.0);
+    let cols = columns_list(props, "columns");
+    let cast_projection = if cols.is_empty() {
+        "COLUMNS(*)::VARCHAR".to_string()
+    } else {
+        cols.iter().map(|c| {
+            let q = quote_ident(c);
+            format!("CAST({q} AS VARCHAR) AS {q}", q = q)
+        }).collect::<Vec<_>>().join(", ")
+    };
+    let patterns: &[(&str, bool, &str)] = &[
+        ("email", true, "regexp_full_match(col_val, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}')"),
+        ("ssn", true, "regexp_full_match(col_val, '\\d{3}-\\d{2}-\\d{4}')"),
+        ("uuid", true, "regexp_full_match(col_val, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')"),
+        ("ipv4", true, "regexp_full_match(col_val, '(25[0-5]|2[0-4]\\d|1?\\d?\\d)(\\.(25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}')"),
+        ("url", false, "regexp_full_match(col_val, 'https?://[^ ]+')"),
+        ("date", false, "regexp_full_match(col_val, '\\d{4}-\\d{2}-\\d{2}([T ]\\d{2}:\\d{2}(:\\d{2})?)?')"),
+        ("credit_card", true, "regexp_full_match(replace(replace(col_val, ' ', ''), '-', ''), '\\d{13,16}')"),
+        ("phone", true, "regexp_full_match(col_val, '[+]?[-0-9 ().]{7,}')"),
+    ];
+    let n_cols = patterns.iter().map(|(ty, _, expr)| {
+        format!("COUNT(*) FILTER (WHERE col_val IS NOT NULL AND {expr})::DOUBLE AS n_{ty}", expr = expr, ty = ty)
+    }).collect::<Vec<_>>().join(", ");
+    let r_cols = patterns.iter().map(|(ty, _, _)| format!("n_{ty} / NULLIF(sample_count, 0) AS r_{ty}", ty = ty)).collect::<Vec<_>>().join(", ");
+    let greatest_args = patterns.iter().map(|(ty, _, _)| format!("COALESCE(r_{ty}, 0)", ty = ty)).collect::<Vec<_>>().join(", ");
+    let mut type_case = format!("CASE WHEN best_rate < {threshold} THEN 'text' ", threshold = threshold);
+    for (ty, _, _) in patterns {
+        type_case.push_str(&format!("WHEN r_{ty} = best_rate THEN '{ty}' ", ty = ty));
+    }
+    type_case.push_str("ELSE 'text' END");
+    let pii_types = patterns.iter().filter(|(_, pii, _)| *pii).map(|(ty, _, _)| format!("'{ty}'", ty = ty)).collect::<Vec<_>>().join(", ");
+    Ok(format!(
+        "WITH __cls_src AS (SELECT {cast_projection} FROM {up}), \
+         __cls_m AS (FROM __cls_src UNPIVOT INCLUDE NULLS (col_val FOR col_name IN (COLUMNS(*)))), \
+         __cls_agg AS (SELECT col_name, COUNT(col_val) AS sample_count, {n_cols} FROM __cls_m GROUP BY col_name), \
+         __cls_rates AS (SELECT col_name, sample_count, {r_cols} FROM __cls_agg), \
+         __cls_best AS (SELECT *, GREATEST({greatest_args}) AS best_rate FROM __cls_rates), \
+         __cls_done AS (SELECT col_name, sample_count, best_rate, {type_case} AS detected_type FROM __cls_best) \
+         SELECT col_name AS \"column\", detected_type, round(best_rate, 4) AS match_rate, sample_count, \
+         detected_type IN ({pii_types}) AS is_pii FROM __cls_done ORDER BY col_name",
+        cast_projection = cast_projection,
+        up = quote_ident(upstream),
+        n_cols = n_cols,
+        r_cols = r_cols,
+        greatest_args = greatest_args,
+        type_case = type_case,
+        pii_types = pii_types,
+    ))
 }
 
 pub(crate) fn build_standardize(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {

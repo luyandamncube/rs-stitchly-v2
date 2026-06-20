@@ -522,6 +522,19 @@ export function portsForComponent(comp: ComponentDef): NodePorts {
         };
     }
 
+    // Record linkage + reconcile - main input + a reference (lookup) input,
+    // single output (matched pairs / a report).
+    if (id === 'qa.link' || id === 'qa.reconcile') {
+        return {
+            inputs: [MAIN_IN, { id: 'lookup', label: 'reference', type: 'lookup' }],
+            outputs: [MAIN_OUT],
+        };
+    }
+    // Profile / classify - single input, a report output (no reject port).
+    if (id === 'qa.profile.adv' || id === 'qa.classify') {
+        return { inputs: [MAIN_IN], outputs: [MAIN_OUT] };
+    }
+
     // Referential integrity - main input + a reference (lookup) input; valid
     // rows pass, orphans (key absent from the reference) route to reject.
     if (id === 'qa.refintegrity') {
@@ -3872,6 +3885,15 @@ function synthQualityValidation(comp: ComponentDef): ComponentManifest {
 }
 
 function synthQualityProfile(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'qa.profile.adv') {
+        return base(comp, [{
+            label: 'Column Profile (Advanced)',
+            fields: [
+                { key: 'column', label: 'Column', kind: 'column', required: true, description: 'The single column to profile in depth.' },
+                { key: 'topN', label: 'Top N values', kind: 'integer', defaultValue: 10, description: 'How many of the most frequent values to list (by count).' },
+            ],
+        }], 'declared');
+    }
     if (comp.id === 'qa.describe') {
         // Outputs the input's column names and types; no configuration.
         return base(comp, [{ label: 'Describe', fields: [] }], 'declared');
@@ -3967,6 +3989,50 @@ function synthQualityCleanse(comp: ComponentDef): ComponentManifest {
                 ],
             },
         ], 'upstream');
+    }
+    if (id === 'qa.link') {
+        return base(comp, [
+            {
+                label: 'Record linkage',
+                fields: [
+                    { key: 'leftColumns', label: 'Main compare columns', kind: 'columns', required: true, description: 'Column(s) on the main input to compare. Multiple columns are concatenated into one key.' },
+                    { key: 'rightColumns', label: 'Reference compare columns', kind: 'columns', required: true, description: 'Column(s) on the reference input (lookup port) to compare against.' },
+                    { key: 'threshold', label: 'Similarity threshold', kind: 'number', defaultValue: 0.85, description: '0.0 to 1.0; higher is stricter. Pairs scoring at or above this are emitted.' },
+                    {
+                        key: 'algorithm',
+                        label: 'Algorithm',
+                        kind: 'select',
+                        defaultValue: 'jaro-winkler',
+                        options: [
+                            { label: 'Jaro-Winkler', value: 'jaro-winkler' },
+                            { label: 'Levenshtein', value: 'levenshtein' },
+                        ],
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
+    if (id === 'qa.reconcile') {
+        return base(comp, [
+            {
+                label: 'Reconcile (Source vs Target)',
+                fields: [
+                    { key: 'keyColumns', label: 'Key column(s)', kind: 'columns', required: true, description: 'The column(s) that identify a row. Source and target are joined on these (NULL-safe). Use the same column names on both inputs.' },
+                    { key: 'measureColumns', label: 'Measure column(s) to sum-compare', kind: 'columns', description: 'Optional numeric columns. For each one the report adds a source_sum, target_sum, and difference (source minus target) metric.' },
+                ],
+            },
+        ], 'upstream');
+    }
+    if (id === 'qa.classify') {
+        return base(comp, [
+            {
+                label: 'Classify / PII Detect',
+                fields: [
+                    { key: 'columns', label: 'Columns to classify', kind: 'columns', description: 'Leave empty to classify every column.' },
+                    { key: 'threshold', label: 'Match threshold', kind: 'number', defaultValue: 0.8, description: '0.0 to 1.0. A column is tagged with a type only when that pattern matches at least this fraction of its non-null values; otherwise it is classified as text.' },
+                ],
+            },
+        ], 'declared');
     }
     if (id === 'qa.refintegrity') {
         return base(comp, [
