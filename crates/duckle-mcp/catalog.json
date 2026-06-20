@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "componentCount": 333,
+  "componentCount": 334,
   "components": [
     {
       "id": "src.csv",
@@ -33890,6 +33890,110 @@
                     "value": "levenshtein"
                   }
                 ]
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "pass",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qa.survivor",
+      "label": "Survivorship (Golden Record)",
+      "kind": "quality",
+      "availability": "available",
+      "summary": "Collapse duplicate records sharing a key into one golden record, picking each surviving field by rule: most-frequent value, most-recent / oldest (by a date column), or max / min. Applies to every non-key column at once.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "pass",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject"
+          }
+        ]
+      },
+      "manifest": {
+        "id": "qa.survivor",
+        "kind": "transform",
+        "label": "Survivorship (Golden Record)",
+        "description": "Collapse duplicate records sharing a key into one golden record, picking each surviving field by rule: most-frequent value, most-recent / oldest (by a date column), or max / min. Applies to every non-key column at once.",
+        "schemaSource": "upstream",
+        "sections": [
+          {
+            "label": "Survivorship (Golden Record)",
+            "fields": [
+              {
+                "key": "groupBy",
+                "label": "Group-by key column(s)",
+                "kind": "columns",
+                "required": true,
+                "description": "Rows sharing these key values are merged into one golden record."
+              },
+              {
+                "key": "rule",
+                "label": "Survivorship rule",
+                "kind": "select",
+                "defaultValue": "most_frequent",
+                "options": [
+                  {
+                    "label": "Most frequent value",
+                    "value": "most_frequent"
+                  },
+                  {
+                    "label": "Most recent (by a date column)",
+                    "value": "most_recent"
+                  },
+                  {
+                    "label": "Oldest (by a date column)",
+                    "value": "oldest"
+                  },
+                  {
+                    "label": "Maximum value",
+                    "value": "max"
+                  },
+                  {
+                    "label": "Minimum value",
+                    "value": "min"
+                  }
+                ]
+              },
+              {
+                "key": "recencyColumn",
+                "label": "Recency column (for most-recent / oldest)",
+                "kind": "column",
+                "description": "The date/version column used to rank rows when the rule is most-recent or oldest."
               }
             ]
           }

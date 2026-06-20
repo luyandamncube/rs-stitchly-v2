@@ -8285,6 +8285,36 @@ fn column_lineage_resolves_sources_live() {
     assert!(by("a").is_some(), "expected an 'a' output column: {:?}", lin);
 }
 
+/// qa.survivor: collapse duplicates sharing a key into one golden record,
+/// taking each field from the most-recent row by a date column.
+#[test]
+fn survivor_builds_golden_record_live() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    // Two rows for id=1: the newer (updated=2) has the corrected name + phone.
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "id,name,phone,updated\n1,Jon,111,1\n1,Jonathan,222,2\n2,Amy,333,1\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("g", "qa.survivor", json!({ "groupBy": ["id"], "rule": "most_recent", "recencyColumn": "updated" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "g"), main_edge("e2", "g", "k")]),
+    );
+    let r = engine.execute_pipeline(&d);
+    assert_eq!(r.status, "ok", "qa.survivor failed: {:?}", r.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 2, "one golden record per id");
+    let name = scalar_string(&format!("SELECT name FROM read_csv_auto('{}') WHERE id = 1", out));
+    assert_eq!(name, "Jonathan", "id=1 survives the most-recent name, got {}", name);
+    let phone = scalar_string(&format!("SELECT CAST(phone AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1", out));
+    assert_eq!(phone, "222", "id=1 survives the most-recent phone, got {}", phone);
+}
+
 /// qa.mask: partial-mask + deterministic salted-hash anonymization, end to end.
 #[test]
 fn mask_anonymizes_columns_live() {

@@ -663,6 +663,7 @@ export const PALETTE: Category[] = [
                     qa('mask', 'Mask / Anonymize', 'available', 'Irreversibly mask a column in place for governance/compliance: deterministic salted-hash pseudonym (joinable across datasets), partial mask (show last N), null-out, or a constant. Pure in-engine, no data leaves your machine.'),
                     qa('dedupe', 'Fuzzy Deduplicate', 'available', 'Drop near-duplicate rows by string similarity'),
                     qa('match', 'Record Match', 'available', 'Find matching record pairs by similarity, with a score'),
+                    qa('survivor', 'Survivorship (Golden Record)', 'available', 'Collapse duplicate records sharing a key into one golden record, picking each surviving field by rule: most-frequent value, most-recent / oldest (by a date column), or max / min. Applies to every non-key column at once.'),
                     qa('addressclean', 'Address Cleanse', 'planned'),
                 ],
             },

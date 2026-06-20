@@ -1121,6 +1121,21 @@
     }
 
     #[test]
+    fn survivor_builds_golden_record_groupby() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["up".into()]);
+        let freq = build_survivor(&ni, &serde_json::json!({"groupBy":["id"],"rule":"most_frequent"})).unwrap();
+        assert!(freq.contains("mode(COLUMNS(* EXCLUDE (\"id\")))"), "got: {}", freq);
+        assert!(freq.contains("GROUP BY \"id\""), "got: {}", freq);
+        let recent = build_survivor(&ni, &serde_json::json!({"groupBy":["id"],"rule":"most_recent","recencyColumn":"updated_at"})).unwrap();
+        assert!(recent.contains("arg_max(COLUMNS(* EXCLUDE (\"id\")), \"updated_at\")"), "got: {}", recent);
+        // most_recent without a recency column is a loud error; unknown rule too.
+        assert!(build_survivor(&ni, &serde_json::json!({"groupBy":["id"],"rule":"most_recent"})).is_err());
+        assert!(build_survivor(&ni, &serde_json::json!({"groupBy":["id"],"rule":"bogus"})).is_err());
+        assert!(build_survivor(&ni, &serde_json::json!({"rule":"max"})).is_err());
+    }
+
+    #[test]
     fn csv_declared_schema_overrides_autodetect() {
         // Regression for issue #3: when the user sets a column to
         // VARCHAR in the Schema panel (typical fix for dd/mm/yy dates

@@ -3929,6 +3929,30 @@ function synthQualityCleanse(comp: ComponentDef): ComponentManifest {
             },
         ], 'upstream');
     }
+    if (id === 'qa.survivor') {
+        return base(comp, [
+            {
+                label: 'Survivorship (Golden Record)',
+                fields: [
+                    { key: 'groupBy', label: 'Group-by key column(s)', kind: 'columns', required: true, description: 'Rows sharing these key values are merged into one golden record.' },
+                    {
+                        key: 'rule',
+                        label: 'Survivorship rule',
+                        kind: 'select',
+                        defaultValue: 'most_frequent',
+                        options: [
+                            { label: 'Most frequent value', value: 'most_frequent' },
+                            { label: 'Most recent (by a date column)', value: 'most_recent' },
+                            { label: 'Oldest (by a date column)', value: 'oldest' },
+                            { label: 'Maximum value', value: 'max' },
+                            { label: 'Minimum value', value: 'min' },
+                        ],
+                    },
+                    { key: 'recencyColumn', label: 'Recency column (for most-recent / oldest)', kind: 'column', description: 'The date/version column used to rank rows when the rule is most-recent or oldest.' },
+                ],
+            },
+        ], 'upstream');
+    }
     if (id === 'qa.dedupe' || id === 'qa.match') {
         const isMatch = id === 'qa.match';
         return base(comp, [

@@ -144,6 +144,7 @@ pub(crate) fn build_view_sql(
         "qa.histogram" => build_histogram(inputs, props),
         "qa.standardize" => build_standardize(inputs, props),
         "qa.mask" => build_mask(inputs, props),
+        "qa.survivor" => build_survivor(inputs, props),
         "qa.dedupe" => build_fuzzy_dedupe(inputs, props),
         "qa.match" => build_record_match(inputs, props),
         "xf.reorder" => build_reorder(inputs, props),
@@ -1952,6 +1953,48 @@ pub(crate) fn build_mask(inputs: &NodeInputs, props: &JsonValue) -> Result<Strin
         return Err("mask: select at least one column to mask".to_string());
     }
     Ok(format!("SELECT * REPLACE ({}) FROM {}", repl.join(", "), quote_ident(upstream)))
+}
+
+/// qa.survivor: collapse duplicate records that share a group key into one
+/// "golden record", choosing each surviving field by a rule. Uses DuckDB's
+/// `COLUMNS(* EXCLUDE keys)` so the rule applies to every non-key column at once
+/// (names preserved). Rules: most_frequent (mode), most_recent / oldest
+/// (arg_max/arg_min by a recency column), max, min. The MDM merge step that
+/// pairs with record matching.
+pub(crate) fn build_survivor(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.survivor"))?;
+    let keys = columns_list(props, "groupBy");
+    if keys.is_empty() {
+        return Err("survivor: choose the group-by key column(s) that identify one entity".to_string());
+    }
+    let key_sql = keys.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+    let cols = format!("COLUMNS(* EXCLUDE ({}))", key_sql);
+    let rule = string_prop(props, "rule").unwrap_or_else(|| "most_frequent".into());
+    let agg = match rule.as_str() {
+        "most_frequent" => format!("mode({})", cols),
+        "max" => format!("max({})", cols),
+        "min" => format!("min({})", cols),
+        "most_recent" | "oldest" => {
+            let rc = string_prop(props, "recencyColumn")
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| format!("survivor: rule '{}' needs a recency column to rank by", rule))?;
+            let f = if rule == "most_recent" { "arg_max" } else { "arg_min" };
+            format!("{}({}, {})", f, cols, quote_ident(rc.trim()))
+        }
+        other => {
+            return Err(format!(
+                "survivor: unknown rule '{}' (use most_frequent | most_recent | oldest | max | min)",
+                other
+            ))
+        }
+    };
+    Ok(format!(
+        "SELECT {}, {} FROM {} GROUP BY {}",
+        key_sql,
+        agg,
+        quote_ident(upstream),
+        key_sql
+    ))
 }
 
 pub(crate) fn build_standardize(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
