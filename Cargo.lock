@@ -2235,12 +2235,15 @@ version = "0.0.1"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
+ "duckle-connectors",
  "duckle-duckdb-engine",
+ "duckle-plugin-sdk",
  "getrandom 0.2.17",
  "regex",
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "zip",
 ]
 

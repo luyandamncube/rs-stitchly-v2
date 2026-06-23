@@ -206,8 +206,7 @@ pub fn extract_to_cache(payload: &[u8]) -> Result<PathBuf, String> {
         return Err(e);
     }
     // Marker written LAST so a half-written dir is never seen as ready.
-    std::fs::write(tmp.join(".duckle-ok"), b"ok")
-        .map_err(|e| format!("write ok marker: {}", e))?;
+    std::fs::write(tmp.join(".duckle-ok"), b"ok").map_err(|e| format!("write ok marker: {}", e))?;
 
     match std::fs::rename(&tmp, &root) {
         Ok(()) => Ok(root),
@@ -218,7 +217,12 @@ pub fn extract_to_cache(payload: &[u8]) -> Result<PathBuf, String> {
                 Ok(root)
             } else {
                 let _ = std::fs::remove_dir_all(&tmp);
-                Err(format!("rename {} -> {}: {}", tmp.display(), root.display(), e))
+                Err(format!(
+                    "rename {} -> {}: {}",
+                    tmp.display(),
+                    root.display(),
+                    e
+                ))
             }
         }
     }
@@ -294,8 +298,7 @@ fn set_exec_755(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("stat {}: {}", path.display(), e))?
         .permissions();
     perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)
-        .map_err(|e| format!("chmod {}: {}", path.display(), e))
+    std::fs::set_permissions(path, perms).map_err(|e| format!("chmod {}: {}", path.display(), e))
 }
 
 #[cfg(not(unix))]

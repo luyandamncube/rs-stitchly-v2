@@ -91,10 +91,7 @@ fn parse_args() -> Result<Args, String> {
     let mut pending_type = String::from("VARCHAR");
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
-        let mut take = |label: &str| {
-            it.next()
-                .ok_or_else(|| format!("{} needs a value", label))
-        };
+        let mut take = |label: &str| it.next().ok_or_else(|| format!("{} needs a value", label));
         match arg.as_str() {
             "--pipeline" => pipeline = Some(PathBuf::from(take("--pipeline")?)),
             "--workspace" => workspace = Some(PathBuf::from(take("--workspace")?)),
@@ -202,7 +199,11 @@ fn resolve_name(args: &Args) -> Result<String, String> {
 fn resolve_workspace(args: &Args) -> PathBuf {
     args.workspace
         .clone()
-        .or_else(|| args.pipeline.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)))
+        .or_else(|| {
+            args.pipeline
+                .as_ref()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+        })
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
@@ -232,7 +233,11 @@ fn run_backfill(args: &Args) -> Result<bool, String> {
     if args.list_watermarks {
         let entries = watermark::list(&workspace, &name);
         if entries.is_empty() {
-            println!("(no saved watermarks for '{}' under {})", name, workspace.display());
+            println!(
+                "(no saved watermarks for '{}' under {})",
+                name,
+                workspace.display()
+            );
         } else {
             println!("saved watermarks for '{}':", name);
             for e in entries {
@@ -264,8 +269,8 @@ fn run() -> Result<bool, String> {
     }
     let text = std::fs::read_to_string(&pipeline)
         .map_err(|e| format!("read {}: {}", pipeline.display(), e))?;
-    let mut doc: PipelineDoc = serde_json::from_str(&text)
-        .map_err(|e| format!("parse {}: {}", pipeline.display(), e))?;
+    let mut doc: PipelineDoc =
+        serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", pipeline.display(), e))?;
 
     // Workspace defaults to the pipeline file's directory. Pre-fetched
     // DuckDB extensions and incremental state live relative to it.
@@ -284,7 +289,10 @@ fn run() -> Result<bool, String> {
     // time. A built bundle deliberately ships these unresolved so each run
     // (e.g. a daily cron of the same artifact) writes a fresh-dated path.
     duckle_duckdb_engine::context::apply_time_builtins(&mut doc);
-    let log_dir = args.log_dir.clone().unwrap_or_else(|| workspace.join("logs"));
+    let log_dir = args
+        .log_dir
+        .clone()
+        .unwrap_or_else(|| workspace.join("logs"));
     std::env::set_var("DUCKLE_WORKSPACE", &workspace);
     std::env::set_var("DUCKLE_LOG_DIR", &log_dir);
 
@@ -296,7 +304,11 @@ fn run() -> Result<bool, String> {
             .unwrap_or_else(|| "pipeline".into())
     });
 
-    eprintln!("duckle-runner: {} (workspace {})", pipeline.display(), workspace.display());
+    eprintln!(
+        "duckle-runner: {} (workspace {})",
+        pipeline.display(),
+        workspace.display()
+    );
     let engine = DuckdbEngine::new(duckdb);
     let result = engine.execute_pipeline_named(&doc, &name);
 
@@ -353,8 +365,8 @@ fn load_secrets_enc(workspace: &Path) -> Result<Option<HashMap<String, String>>,
         .filter(|p| !p.is_empty())
         .ok_or_else(|| "secrets.enc present but DUCKLE_BUNDLE_PASSPHRASE is not set".to_string())?;
 
-    let b64 = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let b64 =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     let payload = base64::engine::general_purpose::STANDARD
         .decode(b64.trim())
         .map_err(|e| format!("decode secrets.enc: {}", e))?;
@@ -446,7 +458,11 @@ fn run_artifact(payload: Vec<u8>) -> ExitCode {
     // duckdb without env_clear, so DUCKLE_DUCKDB_BIN and HOME/USERPROFILE
     // set here are inherited by the spawned child, which resolves extensions
     // under <home>/.duckdb/extensions.
-    let duckdb_name = if cfg!(windows) { "duckdb.exe" } else { "duckdb" };
+    let duckdb_name = if cfg!(windows) {
+        "duckdb.exe"
+    } else {
+        "duckdb"
+    };
     let duckdb = root.join("bin").join(duckdb_name);
     std::env::set_var("DUCKLE_DUCKDB_BIN", &duckdb);
     let binhome = root.join("bin");
@@ -517,7 +533,11 @@ fn run_artifact(payload: Vec<u8>) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    eprintln!("duckle-runner: {} (artifact, workspace {})", pipeline.display(), root.display());
+    eprintln!(
+        "duckle-runner: {} (artifact, workspace {})",
+        pipeline.display(),
+        root.display()
+    );
     let engine = DuckdbEngine::new(duckdb);
     let result = engine.execute_pipeline_named(&doc, &name);
 

@@ -55,7 +55,9 @@ The bridge should add browser-studio endpoints while reusing the same engine and
 |---|---|---|
 | `GET /api/studio/health` | Confirm bridge is reachable and report workspace/DuckDB path. | High |
 | `POST /api/studio/run` | Execute an in-memory `PipelineDoc` from the current canvas. | High |
+| `POST /api/studio/run-stream` | Execute an in-memory `PipelineDoc` and stream live events plus final result. | High |
 | `POST /api/studio/run-partial` | Execute upstream graph through a selected node. | High |
+| `POST /api/studio/run-partial-stream` | Execute upstream graph through a selected node and stream live events plus final result. | High |
 | `POST /api/studio/compile` | Return generated stage SQL for the Plan view. | High |
 | `POST /api/studio/autodetect` | Infer schema/sample rows for source configuration. | Medium |
 | `GET /api/studio/history` | Return run history for a workspace/pipeline id. | Medium |
@@ -249,6 +251,12 @@ curl http://127.0.0.1:8080/api/summary
 curl http://127.0.0.1:8080/api/pipelines
 ```
 
+Automated regression:
+
+```bash
+cargo test -p duckle-runner serve::tests
+```
+
 Exit criteria:
 
 - Runner server starts.
@@ -289,6 +297,12 @@ curl http://127.0.0.1:8080/api/studio/health
 curl -i -X OPTIONS http://127.0.0.1:8080/api/studio/health
 ```
 
+Automated regression:
+
+```bash
+cargo test -p duckle-runner serve::tests
+```
+
 Exit criteria:
 
 - Browser-origin requests from `localhost:5173` are allowed.
@@ -327,6 +341,12 @@ Checks:
 curl -X POST http://127.0.0.1:8080/api/studio/compile \
   -H 'content-type: application/json' \
   -d @sample-compile-request.json
+```
+
+Automated regression:
+
+```bash
+cargo test -p duckle-runner serve::tests
 ```
 
 Exit criteria:
@@ -376,6 +396,14 @@ curl -X POST http://127.0.0.1:8080/api/studio/run \
   -d @sample-run-request.json
 ```
 
+Automated regression:
+
+```bash
+cargo test -p duckle-runner serve::tests
+```
+
+The successful execution test needs `DUCKLE_DUCKDB_BIN` to point at a DuckDB CLI. If it is not set, that specific test soft-skips while request-shape/error tests still run.
+
 Exit criteria:
 
 - Simple file/SQL workflows execute successfully.
@@ -410,12 +438,21 @@ VITE_DUCKLE_HTTP_URL=http://127.0.0.1:8080 \
 npm --prefix frontend run dev
 ```
 
+Automated regression:
+
+```bash
+npm --prefix frontend run lint
+cargo test -p duckle-runner serve::tests
+```
+
 Exit criteria:
 
 - Browser studio can compile a pipeline through HTTP.
 - Browser studio can run a simple pipeline through HTTP.
 - Tauri mode still uses IPC.
 - UI-only mode still works without a bridge.
+
+Phase 4 only needs `runPipeline` and `compilePipelineSql`. Partial runs, autodetect, history, cancel, and live events are later phases.
 
 ### Phase 5: Partial Run and Preview
 
@@ -440,6 +477,15 @@ curl -X POST http://127.0.0.1:8080/api/studio/run-partial \
   -H 'content-type: application/json' \
   -d @sample-run-partial-request.json
 ```
+
+Automated regression:
+
+```bash
+npm --prefix frontend run lint
+cargo test -p duckle-runner serve::tests
+```
+
+The successful partial execution test needs `DUCKLE_DUCKDB_BIN` to point at a DuckDB CLI. If it is not set, that specific test soft-skips while request-shape/error tests still run.
 
 Exit criteria:
 
@@ -470,6 +516,13 @@ curl -X POST http://127.0.0.1:8080/api/studio/autodetect \
   -d '{"format":"csv","options":{"path":"/path/to/file.csv"}}'
 ```
 
+Automated regression:
+
+```bash
+npm --prefix frontend run lint
+cargo test -p duckle-runner serve::tests
+```
+
 Exit criteria:
 
 - CSV/Parquet/JSON source setup works from browser mode.
@@ -489,6 +542,13 @@ Endpoints:
 ```text
 GET /api/studio/history
 GET /api/studio/logs
+```
+
+Automated regression:
+
+```bash
+npm --prefix frontend run lint
+cargo test -p duckle-runner serve::tests
 ```
 
 Exit criteria:
@@ -512,6 +572,13 @@ Endpoint:
 POST /api/studio/cancel
 ```
 
+Automated regression:
+
+```bash
+npm --prefix frontend run lint
+cargo test -p duckle-runner serve::tests
+```
+
 Exit criteria:
 
 - Cancelling a long-running workflow returns a cancelled result.
@@ -521,13 +588,14 @@ Exit criteria:
 
 Goal: restore Tauri-like live node status in browser-runtime mode.
 
-Implementation options:
+Chosen first option: NDJSON over a normal `POST` response. This keeps the request body identical to the non-streaming run endpoints and avoids adding a separate event connection.
 
-- Server-Sent Events,
-- NDJSON streaming,
-- WebSocket.
+Endpoints:
 
-Recommended first option: SSE or NDJSON.
+```text
+POST /api/studio/run-stream
+POST /api/studio/run-partial-stream
+```
 
 Events should match the existing `PipelineEvent` type:
 
@@ -538,6 +606,27 @@ stage_finished
 log
 cancelled
 finished
+```
+
+Each response line is one JSON object:
+
+```json
+{"kind":"event","event":{"type":"started","node_count":2}}
+{"kind":"event","event":{"type":"stage_started","node_id":"sql_1","label":"Query"}}
+{"kind":"result","result":{"status":"ok","duration_ms":42,"nodes":{},"preview":[]}}
+```
+
+Frontend behavior:
+
+- `VITE_DUCKLE_BACKEND=http` uses the streaming endpoints for full and partial runs.
+- The UI receives live `PipelineEvent` values through the same callback path as Tauri IPC.
+- The final `RunResult` is parsed from the last `kind: "result"` line.
+
+Automated regression:
+
+```bash
+npm --prefix frontend run lint
+cargo test -p duckle-runner serve::tests
 ```
 
 Exit criteria:

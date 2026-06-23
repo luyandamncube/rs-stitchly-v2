@@ -18,7 +18,12 @@
 //! pipeline whose interval has elapsed. No authentication: bind it to a
 //! trusted network or localhost.
 
-use duckle_duckdb_engine::{append_run_record, load_run_history, DuckdbEngine, PipelineDoc, RunRecord};
+use duckle_connectors::CsvConnector;
+use duckle_duckdb_engine::{
+    append_run_record, compile_pipeline_sql, load_run_history, DuckdbEngine, PipelineDoc,
+    PipelineEvent, RunRecord,
+};
+use duckle_plugin_sdk::{InspectError, SchemaInspector};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -70,7 +75,12 @@ fn parse_serve_args() -> Result<ServeArgs, String> {
         }
     }
     let workspace = workspace.unwrap_or_else(|| PathBuf::from("."));
-    Ok(ServeArgs { host, port, workspace, duckdb })
+    Ok(ServeArgs {
+        host,
+        port,
+        workspace,
+        duckdb,
+    })
 }
 
 struct State {
@@ -79,6 +89,8 @@ struct State {
     /// Serializes pipeline execution: the shared workspace env vars and DuckDB
     /// process make concurrent runs unsafe, so manual + scheduled runs queue.
     run_lock: Mutex<()>,
+    /// Active browser-studio run. Used by `/api/studio/cancel`.
+    current_run: Mutex<Option<DuckdbEngine>>,
 }
 
 pub fn run() -> Result<(), String> {
@@ -95,7 +107,12 @@ pub fn run() -> Result<(), String> {
     std::env::set_var("DUCKLE_WORKSPACE", &workspace);
     std::env::set_var("DUCKLE_LOG_DIR", workspace.join("logs"));
 
-    let state = Arc::new(State { workspace: workspace.clone(), duckdb: duckdb.clone(), run_lock: Mutex::new(()) });
+    let state = Arc::new(State {
+        workspace: workspace.clone(),
+        duckdb: duckdb.clone(),
+        run_lock: Mutex::new(()),
+        current_run: Mutex::new(None),
+    });
 
     spawn_scheduler(state.clone());
 
@@ -105,7 +122,10 @@ pub fn run() -> Result<(), String> {
     eprintln!("duckle-runner: workspace {}", workspace.display());
     eprintln!("duckle-runner: DuckDB {}", duckdb.display());
     if args.host != "127.0.0.1" && args.host != "localhost" {
-        eprintln!("duckle-runner: WARNING - no authentication; exposed on {}", args.host);
+        eprintln!(
+            "duckle-runner: WARNING - no authentication; exposed on {}",
+            args.host
+        );
     }
 
     for stream in listener.incoming() {
@@ -177,7 +197,12 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         body.extend_from_slice(&tmp[..n]);
     }
     body.truncate(content_length);
-    Ok(Request { method, path, query, body })
+    Ok(Request {
+        method,
+        path,
+        query,
+        body,
+    })
 }
 
 fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -235,35 +260,420 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-fn respond(stream: &mut TcpStream, status: &str, content_type: &str, body: &[u8]) -> Result<(), String> {
+fn respond(
+    stream: &mut TcpStream,
+    status: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<(), String> {
     let header = format!(
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n",
         status,
         content_type,
         body.len()
     );
-    stream.write_all(header.as_bytes()).map_err(|e| e.to_string())?;
+    stream
+        .write_all(header.as_bytes())
+        .map_err(|e| e.to_string())?;
     stream.write_all(body).map_err(|e| e.to_string())?;
     stream.flush().map_err(|e| e.to_string())
 }
 
 fn respond_json(stream: &mut TcpStream, value: &Value) -> Result<(), String> {
-    respond(stream, "200 OK", "application/json", value.to_string().as_bytes())
+    respond(
+        stream,
+        "200 OK",
+        "application/json",
+        value.to_string().as_bytes(),
+    )
 }
 
 fn respond_err(stream: &mut TcpStream, status: &str, msg: &str) -> Result<(), String> {
-    respond(stream, status, "application/json", json!({ "error": msg }).to_string().as_bytes())
+    respond(
+        stream,
+        status,
+        "application/json",
+        json!({ "error": msg }).to_string().as_bytes(),
+    )
+}
+
+fn respond_ndjson_start(stream: &mut TcpStream) -> Result<(), String> {
+    let header = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Max-Age: 86400\r\nConnection: close\r\n\r\n";
+    stream
+        .write_all(header.as_bytes())
+        .map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())
+}
+
+fn write_ndjson_line(stream: &mut TcpStream, value: Value) -> Result<(), String> {
+    let line = format!("{}\n", value);
+    stream
+        .write_all(line.as_bytes())
+        .map_err(|e| e.to_string())?;
+    stream.flush().map_err(|e| e.to_string())
+}
+
+fn api_studio_health(state: &State) -> Value {
+    json!({
+        "ok": true,
+        "mode": "duckle-runner-serve",
+        "workspace": state.workspace.to_string_lossy(),
+        "duckdb": state.duckdb.to_string_lossy(),
+    })
+}
+
+fn studio_pipeline_from_body(body: &[u8]) -> Result<PipelineDoc, String> {
+    let value: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {}", e))?;
+    let pipeline = value.get("pipeline").cloned().unwrap_or(value);
+    serde_json::from_value(pipeline).map_err(|e| format!("invalid pipeline: {}", e))
+}
+
+fn api_studio_compile(body: &[u8]) -> Result<Value, String> {
+    let pipeline = studio_pipeline_from_body(body)?;
+    let stages = compile_pipeline_sql(&pipeline).map_err(|e| e.to_string())?;
+    serde_json::to_value(stages).map_err(|e| format!("serialize compile result: {}", e))
+}
+
+fn api_studio_run_inner(
+    state: &State,
+    body: &[u8],
+    target_node_id: Option<String>,
+    trigger: &str,
+) -> Result<Value, String> {
+    let value: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {}", e))?;
+    let pipeline = studio_pipeline_from_body(body)?;
+    let pipeline_id = value
+        .get("pipelineId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+    let pipeline_name = value
+        .get("pipelineName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+    let workspace = value
+        .get("workspacePath")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.workspace.clone());
+    let log_dir = workspace.join("logs");
+
+    let _guard = state
+        .run_lock
+        .lock()
+        .map_err(|_| "run lock poisoned".to_string())?;
+    std::env::set_var("DUCKLE_DUCKDB_BIN", &state.duckdb);
+    std::env::set_var("DUCKLE_WORKSPACE", &workspace);
+    std::env::set_var("DUCKLE_LOG_DIR", &log_dir);
+
+    let engine = DuckdbEngine::new(state.duckdb.clone()).for_new_run();
+    *state
+        .current_run
+        .lock()
+        .map_err(|_| "current run lock poisoned".to_string())? = Some(engine.clone());
+    let result = engine.execute_pipeline_with_events(
+        &pipeline,
+        target_node_id.as_deref(),
+        pipeline_name.as_deref(),
+        |_| {},
+    );
+    *state
+        .current_run
+        .lock()
+        .map_err(|_| "current run lock poisoned".to_string())? = None;
+
+    if let Some(id) = &pipeline_id {
+        let record = RunRecord::from_result(&result, trigger);
+        let _ = append_run_record(&workspace, id, record);
+    }
+
+    serde_json::to_value(result).map_err(|e| format!("serialize run result: {}", e))
+}
+
+fn api_studio_run(state: &State, body: &[u8]) -> Result<Value, String> {
+    api_studio_run_inner(state, body, None, "manual")
+}
+
+fn api_studio_run_partial(state: &State, body: &[u8]) -> Result<Value, String> {
+    let value: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {}", e))?;
+    let target = value
+        .get("targetNodeId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "missing targetNodeId".to_string())?
+        .to_string();
+    api_studio_run_inner(state, body, Some(target), "partial")
+}
+
+fn api_studio_run_stream(
+    state: &State,
+    body: &[u8],
+    target_node_id: Option<String>,
+    trigger: &str,
+    stream: &mut TcpStream,
+) -> Result<(), String> {
+    let value: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {}", e))?;
+    let pipeline = studio_pipeline_from_body(body)?;
+    let pipeline_id = value
+        .get("pipelineId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+    let pipeline_name = value
+        .get("pipelineName")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.to_string());
+    let workspace = value
+        .get("workspacePath")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.workspace.clone());
+    let log_dir = workspace.join("logs");
+
+    respond_ndjson_start(stream)?;
+
+    let _guard = match state.run_lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            write_ndjson_line(
+                stream,
+                json!({ "kind": "error", "error": "run lock poisoned" }),
+            )?;
+            return Ok(());
+        }
+    };
+    std::env::set_var("DUCKLE_DUCKDB_BIN", &state.duckdb);
+    std::env::set_var("DUCKLE_WORKSPACE", &workspace);
+    std::env::set_var("DUCKLE_LOG_DIR", &log_dir);
+
+    let engine = DuckdbEngine::new(state.duckdb.clone()).for_new_run();
+    match state.current_run.lock() {
+        Ok(mut current) => *current = Some(engine.clone()),
+        Err(_) => {
+            write_ndjson_line(
+                stream,
+                json!({ "kind": "error", "error": "current run lock poisoned" }),
+            )?;
+            return Ok(());
+        }
+    }
+    let result = engine.execute_pipeline_with_events(
+        &pipeline,
+        target_node_id.as_deref(),
+        pipeline_name.as_deref(),
+        |event: PipelineEvent| {
+            let event_value = serde_json::to_value(event).unwrap_or_else(|e| {
+                json!({
+                    "type": "log",
+                    "node_id": "runtime",
+                    "level": "error",
+                    "message": format!("serialize event: {}", e),
+                })
+            });
+            let _ = write_ndjson_line(stream, json!({ "kind": "event", "event": event_value }));
+        },
+    );
+    if let Ok(mut current) = state.current_run.lock() {
+        *current = None;
+    }
+
+    if let Some(id) = &pipeline_id {
+        let record = RunRecord::from_result(&result, trigger);
+        let _ = append_run_record(&workspace, id, record);
+    }
+
+    let result_value = match serde_json::to_value(result) {
+        Ok(value) => value,
+        Err(e) => {
+            write_ndjson_line(
+                stream,
+                json!({ "kind": "error", "error": format!("serialize run result: {}", e) }),
+            )?;
+            return Ok(());
+        }
+    };
+    write_ndjson_line(stream, json!({ "kind": "result", "result": result_value }))
+}
+
+fn api_studio_run_partial_stream(
+    state: &State,
+    body: &[u8],
+    stream: &mut TcpStream,
+) -> Result<(), String> {
+    let value: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {}", e))?;
+    let target = value
+        .get("targetNodeId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "missing targetNodeId".to_string())?
+        .to_string();
+    api_studio_run_stream(state, body, Some(target), "partial", stream)
+}
+
+fn format_inspect_error(err: InspectError) -> String {
+    err.to_string()
+}
+
+fn api_studio_autodetect(state: &State, body: &[u8]) -> Result<Value, String> {
+    let value: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {}", e))?;
+    let format = value
+        .get("format")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "missing format".to_string())?;
+    let options = value.get("options").cloned().unwrap_or_else(|| json!({}));
+    let engine = DuckdbEngine::new(state.duckdb.clone());
+    let inspection = match engine.inspect(format, options.clone()) {
+        Ok(insp) => insp,
+        Err(e) => {
+            if matches!(format, "csv" | "tsv") {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("tokio runtime: {}", e))?
+                    .block_on(CsvConnector.inspect(options))
+                    .map_err(format_inspect_error)?
+            } else {
+                return Err(e.to_string());
+            }
+        }
+    };
+    Ok(json!({
+        "columns": inspection.schema,
+        "sampleRows": inspection.sample_rows,
+    }))
+}
+
+fn studio_workspace_from_query(state: &State, query: &HashMap<String, String>) -> PathBuf {
+    query
+        .get("workspacePath")
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.workspace.clone())
+}
+
+fn studio_pipeline_id_from_query(query: &HashMap<String, String>) -> Result<String, String> {
+    query
+        .get("pipelineId")
+        .or_else(|| query.get("id"))
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+        .ok_or_else(|| "missing pipelineId".to_string())
+}
+
+fn api_studio_history(state: &State, query: &HashMap<String, String>) -> Result<Value, String> {
+    let workspace = studio_workspace_from_query(state, query);
+    let pipeline_id = studio_pipeline_id_from_query(query)?;
+    serde_json::to_value(load_run_history(&workspace, &pipeline_id))
+        .map_err(|e| format!("serialize history: {}", e))
+}
+
+fn api_studio_logs(state: &State, query: &HashMap<String, String>) -> Result<Value, String> {
+    let workspace = studio_workspace_from_query(state, query);
+    let pipeline_id = studio_pipeline_id_from_query(query)?;
+    let tail: usize = query
+        .get("tail")
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(200);
+    let file = workspace
+        .join("logs")
+        .join(sanitize_segment(&pipeline_id))
+        .join("runtime.log");
+    let text = match std::fs::read_to_string(&file) {
+        Ok(t) => t,
+        Err(_) => {
+            return Ok(json!({
+                "entries": [],
+                "file": file.to_string_lossy(),
+            }))
+        }
+    };
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(tail);
+    let entries: Vec<Value> = lines[start..]
+        .iter()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap_or_else(|_| json!({ "raw": l })))
+        .collect();
+    Ok(json!({
+        "entries": entries,
+        "file": file.to_string_lossy(),
+    }))
+}
+
+fn api_studio_cancel(state: &State) -> Result<Value, String> {
+    let cancelled = match state
+        .current_run
+        .lock()
+        .map_err(|_| "current run lock poisoned".to_string())?
+        .as_ref()
+    {
+        Some(engine) => {
+            engine.request_cancel();
+            true
+        }
+        None => false,
+    };
+    Ok(json!({ "ok": true, "cancelled": cancelled }))
 }
 
 fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
     let req = read_request(&mut stream)?;
     let route = (req.method.as_str(), req.path.as_str());
     match route {
-        ("GET", "/") | ("GET", "/index.html") => {
-            respond(&mut stream, "200 OK", "text/html; charset=utf-8", PANEL_HTML.as_bytes())
-        }
+        ("OPTIONS", _) => respond(&mut stream, "204 No Content", "text/plain", b""),
+        ("GET", "/") | ("GET", "/index.html") => respond(
+            &mut stream,
+            "200 OK",
+            "text/html; charset=utf-8",
+            PANEL_HTML.as_bytes(),
+        ),
         ("GET", "/api/summary") => respond_json(&mut stream, &api_summary(state)),
         ("GET", "/api/pipelines") => respond_json(&mut stream, &api_pipelines(state)),
+        ("GET", "/api/studio/health") => respond_json(&mut stream, &api_studio_health(state)),
+        ("POST", "/api/studio/compile") => match api_studio_compile(&req.body) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
+        ("POST", "/api/studio/run") => match api_studio_run(state, &req.body) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
+        ("POST", "/api/studio/run-partial") => match api_studio_run_partial(state, &req.body) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
+        ("POST", "/api/studio/run-stream") => {
+            match api_studio_run_stream(state, &req.body, None, "manual", &mut stream) {
+                Ok(()) => Ok(()),
+                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+            }
+        }
+        ("POST", "/api/studio/run-partial-stream") => {
+            match api_studio_run_partial_stream(state, &req.body, &mut stream) {
+                Ok(()) => Ok(()),
+                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+            }
+        }
+        ("POST", "/api/studio/autodetect") => match api_studio_autodetect(state, &req.body) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
+        ("GET", "/api/studio/history") => match api_studio_history(state, &req.query) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
+        ("GET", "/api/studio/logs") => match api_studio_logs(state, &req.query) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
+        ("POST", "/api/studio/cancel") => match api_studio_cancel(state) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
         ("GET", "/api/pipeline") => match req.query.get("file") {
             Some(f) => match read_pipeline_file(state, f) {
                 Ok(v) => respond_json(&mut stream, &v),
@@ -271,7 +681,10 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
             },
             None => respond_err(&mut stream, "400 Bad Request", "missing file"),
         },
-        ("GET", "/api/runs") => respond_json(&mut stream, &api_runs(state, req.query.get("id").map(|s| s.as_str()))),
+        ("GET", "/api/runs") => respond_json(
+            &mut stream,
+            &api_runs(state, req.query.get("id").map(|s| s.as_str())),
+        ),
         ("GET", "/api/log") => respond_json(&mut stream, &api_log(state, &req.query)),
         ("GET", "/api/schedules") => respond_json(&mut stream, &load_schedules(state)),
         ("POST", "/api/schedules") => {
@@ -302,7 +715,15 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
 /// array), skipping bookkeeping folders. Returns (absolute path, id, value).
 fn discover_pipelines(workspace: &Path) -> Vec<(PathBuf, String, Value)> {
     let mut out = Vec::new();
-    let skip = ["runs", "logs", "connections", "node_modules", ".duckle", ".git", "target"];
+    let skip = [
+        "runs",
+        "logs",
+        "connections",
+        "node_modules",
+        ".duckle",
+        ".git",
+        "target",
+    ];
     let mut stack = vec![workspace.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let rd = match std::fs::read_dir(&dir) {
@@ -330,7 +751,10 @@ fn discover_pipelines(workspace: &Path) -> Vec<(PathBuf, String, Value)> {
                 Err(_) => continue,
             };
             if v.get("nodes").and_then(|n| n.as_array()).is_some() {
-                let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let id = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 out.push((path, id, v));
             }
         }
@@ -409,7 +833,11 @@ fn api_runs(state: &State, only: Option<&str>) -> Value {
                 continue;
             }
         }
-        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let name = v
+            .get("name")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         for r in load_run_history(&state.workspace, &id) {
             rows.push(json!({
                 "id": id,
@@ -428,7 +856,9 @@ fn api_runs(state: &State, only: Option<&str>) -> Value {
     }
     // RunRecord.at is RFC3339 UTC, so a string sort orders by time; newest first.
     rows.sort_by(|a, b| {
-        b.get("at").and_then(|v| v.as_str()).unwrap_or("")
+        b.get("at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
             .cmp(a.get("at").and_then(|v| v.as_str()).unwrap_or(""))
     });
     json!({ "runs": rows })
@@ -436,7 +866,8 @@ fn api_runs(state: &State, only: Option<&str>) -> Value {
 
 fn read_pipeline_file(state: &State, file: &str) -> Result<Value, String> {
     let path = resolve_in_workspace(&state.workspace, file)?;
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))
 }
 
@@ -444,7 +875,9 @@ fn read_pipeline_file(state: &State, file: &str) -> Result<Value, String> {
 /// workspace (no `..` traversal beyond the root).
 fn resolve_in_workspace(workspace: &Path, file: &str) -> Result<PathBuf, String> {
     let candidate = workspace.join(file);
-    let canon = candidate.canonicalize().map_err(|_| format!("not found: {}", file))?;
+    let canon = candidate
+        .canonicalize()
+        .map_err(|_| format!("not found: {}", file))?;
     if !canon.starts_with(workspace) {
         return Err("path escapes workspace".into());
     }
@@ -456,8 +889,15 @@ fn api_log(state: &State, query: &HashMap<String, String>) -> Value {
         Some(i) => i,
         None => return json!({ "entries": [] }),
     };
-    let tail: usize = query.get("tail").and_then(|t| t.parse().ok()).unwrap_or(200);
-    let file = state.workspace.join("logs").join(sanitize_segment(id)).join("runtime.log");
+    let tail: usize = query
+        .get("tail")
+        .and_then(|t| t.parse().ok())
+        .unwrap_or(200);
+    let file = state
+        .workspace
+        .join("logs")
+        .join(sanitize_segment(id))
+        .join("runtime.log");
     let text = match std::fs::read_to_string(&file) {
         Ok(t) => t,
         Err(_) => return json!({ "entries": [], "file": file.to_string_lossy() }),
@@ -475,9 +915,19 @@ fn api_log(state: &State, query: &HashMap<String, String>) -> Value {
 fn sanitize_segment(name: &str) -> String {
     let s: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    if s.is_empty() { "pipeline".into() } else { s }
+    if s.is_empty() {
+        "pipeline".into()
+    } else {
+        s
+    }
 }
 
 // ── Schedules ──
@@ -495,12 +945,24 @@ fn load_schedules(state: &State) -> Value {
 }
 
 fn save_schedule(state: &State, body: &Value) -> Result<Value, String> {
-    let id = body.get("id").and_then(|v| v.as_str()).ok_or("missing id")?;
-    let enabled = body.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-    let interval = body.get("intervalMinutes").and_then(|v| v.as_u64()).unwrap_or(0);
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or("missing id")?;
+    let enabled = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let interval = body
+        .get("intervalMinutes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let mut all = load_schedules(state);
     let obj = all.as_object_mut().ok_or("schedule store corrupt")?;
-    obj.insert(id.to_string(), json!({ "enabled": enabled, "intervalMinutes": interval }));
+    obj.insert(
+        id.to_string(),
+        json!({ "enabled": enabled, "intervalMinutes": interval }),
+    );
     std::fs::write(schedules_path(&state.workspace), all.to_string())
         .map_err(|e| format!("write schedules: {}", e))?;
     Ok(json!({ "ok": true }))
@@ -514,12 +976,20 @@ fn save_schedule(state: &State, body: &Value) -> Result<Value, String> {
 /// run lock so a scheduled run never overlaps a manual one.
 fn execute_one(state: &State, file: &str, trigger: &str) -> Result<Value, String> {
     let path = resolve_in_workspace(&state.workspace, file)?;
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-    let mut doc: PipelineDoc = serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let mut doc: PipelineDoc =
+        serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))?;
 
-    let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "pipeline".into());
+    let id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "pipeline".into());
 
-    let _guard = state.run_lock.lock().map_err(|_| "run lock poisoned".to_string())?;
+    let _guard = state
+        .run_lock
+        .lock()
+        .map_err(|_| "run lock poisoned".to_string())?;
 
     // Same placeholder resolution as `duckle-runner run`: ${ENV:KEY} secrets,
     // then the dynamic ${date}/${datetime}/... builtins.
@@ -530,7 +1000,11 @@ fn execute_one(state: &State, file: &str, trigger: &str) -> Result<Value, String
     let engine = DuckdbEngine::new(state.duckdb.clone());
     let result = engine.execute_pipeline_named(&doc, &id);
 
-    let _ = append_run_record(&state.workspace, &id, RunRecord::from_result(&result, trigger));
+    let _ = append_run_record(
+        &state.workspace,
+        &id,
+        RunRecord::from_result(&result, trigger),
+    );
 
     Ok(json!({
         "id": id,
@@ -560,11 +1034,19 @@ fn spawn_scheduler(state: Arc<State>) {
                 None => continue,
             };
             // Map id -> its file path for the enabled, due ones.
-            let pipes: HashMap<String, PathBuf> =
-                discover_pipelines(&state.workspace).into_iter().map(|(p, id, _)| (id, p)).collect();
+            let pipes: HashMap<String, PathBuf> = discover_pipelines(&state.workspace)
+                .into_iter()
+                .map(|(p, id, _)| (id, p))
+                .collect();
             for (id, cfg) in obj {
-                let enabled = cfg.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                let minutes = cfg.get("intervalMinutes").and_then(|v| v.as_u64()).unwrap_or(0);
+                let enabled = cfg
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let minutes = cfg
+                    .get("intervalMinutes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 if !enabled || minutes == 0 {
                     last_fired.remove(id);
                     continue;
@@ -596,4 +1078,807 @@ fn spawn_scheduler(state: Arc<State>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TMP: AtomicUsize = AtomicUsize::new(0);
+
+    struct TempRoot {
+        path: PathBuf,
+    }
+
+    impl TempRoot {
+        fn new() -> Self {
+            let n = NEXT_TMP.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "duckle-runner-serve-test-{}-{}",
+                std::process::id(),
+                n
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    struct HttpResponse {
+        status: String,
+        headers: String,
+        raw_body: String,
+        body: Value,
+    }
+
+    fn make_state(workspace: PathBuf, duckdb: PathBuf) -> State {
+        State {
+            workspace,
+            duckdb,
+            run_lock: Mutex::new(()),
+            current_run: Mutex::new(None),
+        }
+    }
+
+    fn make_state_with_current_run(workspace: PathBuf, duckdb: PathBuf) -> State {
+        State {
+            workspace,
+            current_run: Mutex::new(Some(DuckdbEngine::new(duckdb.clone()).for_new_run())),
+            duckdb,
+            run_lock: Mutex::new(()),
+        }
+    }
+
+    fn write_pipeline(workspace: &Path, name: &str) {
+        std::fs::write(
+            workspace.join(name),
+            r#"{"name":"Example Pipeline","nodes":[],"edges":[]}"#,
+        )
+        .unwrap();
+    }
+
+    fn request(state: State, target: &str) -> HttpResponse {
+        request_with_method(state, "GET", target)
+    }
+
+    fn request_with_method(state: State, method: &str, target: &str) -> HttpResponse {
+        request_with_body(state, method, target, "")
+    }
+
+    fn request_with_body(state: State, method: &str, target: &str, body: &str) -> HttpResponse {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let target = target.to_string();
+        let method = method.to_string();
+        let body = body.to_string();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle(stream, &state).unwrap();
+        });
+
+        let mut client = TcpStream::connect(addr).unwrap();
+        write!(
+            client,
+            "{} {} HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://localhost:5173\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            method,
+            target,
+            body.len(),
+            body
+        )
+        .unwrap();
+        client.flush().unwrap();
+
+        let mut raw = String::new();
+        client.read_to_string(&mut raw).unwrap();
+        server.join().unwrap();
+
+        let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+        let status = head.lines().next().unwrap().to_string();
+        let headers = head.to_string();
+        let raw_body = body.to_string();
+        let body = if body.trim().is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(body).unwrap_or_else(|_| json!({ "raw": body }))
+        };
+        HttpResponse {
+            status,
+            headers,
+            raw_body,
+            body,
+        }
+    }
+
+    #[test]
+    fn summary_endpoint_returns_workspace_counts() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_pipeline(&workspace, "example.json");
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(make_state(workspace, duckdb), "/api/summary");
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["pipelineCount"], 1);
+        assert_eq!(response.body["workspace"].as_str().is_some(), true);
+    }
+
+    #[test]
+    fn pipelines_endpoint_discovers_pipeline_json() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        write_pipeline(&workspace, "example.json");
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(make_state(workspace, duckdb), "/api/pipelines");
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        let pipelines = response.body["pipelines"].as_array().unwrap();
+        assert_eq!(pipelines.len(), 1);
+        assert_eq!(pipelines[0]["file"], "example.json");
+        assert_eq!(pipelines[0]["id"], "example");
+        assert_eq!(pipelines[0]["name"], "Example Pipeline");
+    }
+
+    #[test]
+    fn pipeline_endpoint_refuses_path_traversal() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(tmp.path.join("outside.json"), r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(
+            make_state(workspace, duckdb),
+            "/api/pipeline?file=../outside.json",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 404 Not Found"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["error"], "path escapes workspace");
+    }
+
+    #[test]
+    fn unknown_route_returns_json_404() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(make_state(workspace, duckdb), "/api/does-not-exist");
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 404 Not Found"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["error"], "not found");
+    }
+
+    #[test]
+    fn studio_health_reports_bridge_state() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(
+            make_state(workspace.clone(), duckdb.clone()),
+            "/api/studio/health",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["ok"], true);
+        assert_eq!(response.body["mode"], "duckle-runner-serve");
+        assert_eq!(
+            response.body["workspace"].as_str(),
+            Some(workspace.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            response.body["duckdb"].as_str(),
+            Some(duckdb.to_string_lossy().as_ref())
+        );
+        assert!(
+            response.headers.contains("Access-Control-Allow-Origin: *"),
+            "{}",
+            response.headers
+        );
+    }
+
+    #[test]
+    fn options_preflight_returns_cors_headers() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request_with_method(
+            make_state(workspace, duckdb),
+            "OPTIONS",
+            "/api/studio/health",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 204 No Content"),
+            "{}",
+            response.status
+        );
+        assert!(
+            response
+                .headers
+                .contains("Access-Control-Allow-Methods: GET, POST, OPTIONS"),
+            "{}",
+            response.headers
+        );
+        assert!(
+            response
+                .headers
+                .contains("Access-Control-Allow-Headers: content-type"),
+            "{}",
+            response.headers
+        );
+    }
+
+    #[test]
+    fn studio_compile_returns_stage_sql_for_valid_pipeline() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+        let body = r#"{
+            "pipeline": {
+                "nodes": [
+                    {
+                        "id": "sql1",
+                        "position": { "x": 0, "y": 0 },
+                        "data": {
+                            "label": "sql1",
+                            "componentId": "code.sql",
+                            "properties": { "sql": "select 1 as n" }
+                        }
+                    }
+                ],
+                "edges": []
+            }
+        }"#;
+
+        let response = request_with_body(
+            make_state(workspace, duckdb),
+            "POST",
+            "/api/studio/compile",
+            body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        let stages = response.body.as_array().unwrap();
+        assert_eq!(stages.len(), 1);
+        assert_eq!(stages[0]["node_id"], "sql1");
+        assert_eq!(stages[0]["kind"], "view");
+        assert!(stages[0]["sql"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("select 1 as n"));
+    }
+
+    #[test]
+    fn studio_compile_returns_json_400_for_invalid_pipeline() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+        let body = r#"{"pipeline":{"nodes":"not-an-array","edges":[]}}"#;
+
+        let response = request_with_body(
+            make_state(workspace, duckdb),
+            "POST",
+            "/api/studio/compile",
+            body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 400 Bad Request"),
+            "{}",
+            response.status
+        );
+        assert!(response.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid pipeline"));
+    }
+
+    #[test]
+    fn studio_run_returns_json_400_for_invalid_pipeline() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+        let body = r#"{"pipeline":{"nodes":"not-an-array","edges":[]}}"#;
+
+        let response = request_with_body(
+            make_state(workspace, duckdb),
+            "POST",
+            "/api/studio/run",
+            body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 400 Bad Request"),
+            "{}",
+            response.status
+        );
+        assert!(response.body["error"]
+            .as_str()
+            .unwrap()
+            .contains("invalid pipeline"));
+    }
+
+    #[test]
+    fn studio_run_executes_pipeline_when_duckdb_is_available() {
+        let duckdb = match std::env::var("DUCKLE_DUCKDB_BIN").ok().map(PathBuf::from) {
+            Some(p) if p.exists() => p,
+            _ => {
+                eprintln!("skipping: set DUCKLE_DUCKDB_BIN to a duckdb CLI to run");
+                return;
+            }
+        };
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let body = format!(
+            r#"{{
+                "pipeline": {{
+                    "nodes": [
+                        {{
+                            "id": "sql1",
+                            "position": {{ "x": 0, "y": 0 }},
+                            "data": {{
+                                "label": "sql1",
+                                "componentId": "code.sql",
+                                "properties": {{ "sql": "select 7 as n" }}
+                            }}
+                        }}
+                    ],
+                    "edges": []
+                }},
+                "pipelineId": "phase3",
+                "pipelineName": "Phase 3",
+                "workspacePath": "{}"
+            }}"#,
+            workspace.to_string_lossy().replace('\\', "\\\\")
+        );
+
+        let response = request_with_body(
+            make_state(workspace.clone(), duckdb),
+            "POST",
+            "/api/studio/run",
+            &body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["status"], "ok");
+        assert_eq!(response.body["nodes"]["sql1"]["status"], "ok");
+        let preview_rows = response.body["preview"][0]["rows"].as_array().unwrap();
+        assert_eq!(preview_rows[0]["n"], 7);
+
+        let history_path = workspace.join("runs").join("phase3.json");
+        let history = std::fs::read_to_string(history_path).unwrap();
+        let records: Value = serde_json::from_str(&history).unwrap();
+        assert_eq!(records[0]["status"], "ok");
+        assert_eq!(records[0]["trigger"], "manual");
+    }
+
+    #[test]
+    fn studio_run_partial_requires_target_node_id() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+        let body = r#"{"pipeline":{"nodes":[],"edges":[]}}"#;
+
+        let response = request_with_body(
+            make_state(workspace, duckdb),
+            "POST",
+            "/api/studio/run-partial",
+            body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 400 Bad Request"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["error"], "missing targetNodeId");
+    }
+
+    #[test]
+    fn studio_run_partial_executes_target_when_duckdb_is_available() {
+        let duckdb = match std::env::var("DUCKLE_DUCKDB_BIN").ok().map(PathBuf::from) {
+            Some(p) if p.exists() => p,
+            _ => {
+                eprintln!("skipping: set DUCKLE_DUCKDB_BIN to a duckdb CLI to run");
+                return;
+            }
+        };
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let body = format!(
+            r#"{{
+                "pipeline": {{
+                    "nodes": [
+                        {{
+                            "id": "sql1",
+                            "position": {{ "x": 0, "y": 0 }},
+                            "data": {{
+                                "label": "sql1",
+                                "componentId": "code.sql",
+                                "properties": {{ "sql": "select 11 as n" }}
+                            }}
+                        }}
+                    ],
+                    "edges": []
+                }},
+                "targetNodeId": "sql1",
+                "pipelineId": "phase5",
+                "pipelineName": "Phase 5",
+                "workspacePath": "{}"
+            }}"#,
+            workspace.to_string_lossy().replace('\\', "\\\\")
+        );
+
+        let response = request_with_body(
+            make_state(workspace.clone(), duckdb),
+            "POST",
+            "/api/studio/run-partial",
+            &body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["status"], "ok");
+        assert_eq!(response.body["nodes"]["sql1"]["status"], "ok");
+        let preview_rows = response.body["preview"][0]["rows"].as_array().unwrap();
+        assert_eq!(preview_rows[0]["n"], 11);
+
+        let history_path = workspace.join("runs").join("phase5.json");
+        let history = std::fs::read_to_string(history_path).unwrap();
+        let records: Value = serde_json::from_str(&history).unwrap();
+        assert_eq!(records[0]["status"], "ok");
+        assert_eq!(records[0]["trigger"], "partial");
+    }
+
+    #[test]
+    fn studio_run_stream_emits_events_and_result_when_duckdb_is_available() {
+        let duckdb = match std::env::var("DUCKLE_DUCKDB_BIN").ok().map(PathBuf::from) {
+            Some(p) if p.exists() => p,
+            _ => {
+                eprintln!("skipping: set DUCKLE_DUCKDB_BIN to a duckdb CLI to run");
+                return;
+            }
+        };
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let body = format!(
+            r#"{{
+                "pipeline": {{
+                    "nodes": [
+                        {{
+                            "id": "sql1",
+                            "position": {{ "x": 0, "y": 0 }},
+                            "data": {{
+                                "label": "sql1",
+                                "componentId": "code.sql",
+                                "properties": {{ "sql": "select 13 as n" }}
+                            }}
+                        }}
+                    ],
+                    "edges": []
+                }},
+                "pipelineId": "phase9",
+                "pipelineName": "Phase 9",
+                "workspacePath": "{}"
+            }}"#,
+            workspace.to_string_lossy().replace('\\', "\\\\")
+        );
+
+        let response = request_with_body(
+            make_state(workspace.clone(), duckdb),
+            "POST",
+            "/api/studio/run-stream",
+            &body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert!(
+            response
+                .headers
+                .contains("Content-Type: application/x-ndjson"),
+            "{}",
+            response.headers
+        );
+        let lines: Vec<Value> = response
+            .raw_body
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(lines
+            .iter()
+            .any(|v| v["kind"] == "event" && v["event"]["type"] == "started"));
+        assert!(lines
+            .iter()
+            .any(|v| v["kind"] == "event" && v["event"]["type"] == "stage_finished"));
+        let result = lines
+            .iter()
+            .find(|v| v["kind"] == "result")
+            .expect("result line");
+        assert_eq!(result["result"]["status"], "ok");
+        assert_eq!(result["result"]["preview"][0]["rows"][0]["n"], 13);
+
+        let history_path = workspace.join("runs").join("phase9.json");
+        let history = std::fs::read_to_string(history_path).unwrap();
+        let records: Value = serde_json::from_str(&history).unwrap();
+        assert_eq!(records[0]["status"], "ok");
+        assert_eq!(records[0]["trigger"], "manual");
+    }
+
+    #[test]
+    fn studio_run_partial_stream_requires_target_node_id() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+        let body = r#"{"pipeline":{"nodes":[],"edges":[]}}"#;
+
+        let response = request_with_body(
+            make_state(workspace, duckdb),
+            "POST",
+            "/api/studio/run-partial-stream",
+            body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 400 Bad Request"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["error"], "missing targetNodeId");
+    }
+
+    #[test]
+    fn studio_autodetect_requires_format() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request_with_body(
+            make_state(workspace, duckdb),
+            "POST",
+            "/api/studio/autodetect",
+            r#"{"options":{}}"#,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 400 Bad Request"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["error"], "missing format");
+    }
+
+    #[test]
+    fn studio_autodetect_csv_returns_columns_and_sample_rows() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let csv = workspace.join("people.csv");
+        std::fs::write(&csv, "id,name\n1,Ada\n2,Linus\n").unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+        let body = format!(
+            r#"{{
+                "format": "csv",
+                "options": {{
+                    "path": "{}",
+                    "hasHeader": true
+                }}
+            }}"#,
+            csv.to_string_lossy().replace('\\', "\\\\")
+        );
+
+        let response = request_with_body(
+            make_state(workspace, duckdb),
+            "POST",
+            "/api/studio/autodetect",
+            &body,
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        let columns = response.body["columns"].as_array().unwrap();
+        assert_eq!(columns.len(), 2);
+        assert_eq!(columns[0]["name"], "id");
+        assert_eq!(columns[1]["name"], "name");
+        let rows = response.body["sampleRows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "Ada");
+    }
+
+    #[test]
+    fn studio_history_requires_pipeline_id() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(make_state(workspace, duckdb), "/api/studio/history");
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 400 Bad Request"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["error"], "missing pipelineId");
+    }
+
+    #[test]
+    fn studio_history_returns_run_records_for_pipeline() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        let runs = workspace.join("runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("phase7.json"),
+            r#"[{"at":"2026-01-01T00:00:00Z","status":"ok","duration_ms":5,"rows":2,"node_count":1,"trigger":"manual"}]"#,
+        )
+        .unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(
+            make_state(workspace, duckdb),
+            "/api/studio/history?pipelineId=phase7",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        let records = response.body.as_array().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["status"], "ok");
+        assert_eq!(records[0]["trigger"], "manual");
+    }
+
+    #[test]
+    fn studio_logs_returns_tailed_runtime_entries() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        let log_dir = workspace.join("logs").join("phase7");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::write(
+            log_dir.join("runtime.log"),
+            "{\"message\":\"first\"}\n{\"message\":\"second\"}\n",
+        )
+        .unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(
+            make_state(workspace, duckdb),
+            "/api/studio/logs?pipelineId=phase7&tail=1",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        let entries = response.body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["message"], "second");
+    }
+
+    #[test]
+    fn studio_cancel_reports_false_when_no_run_is_active() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response =
+            request_with_method(make_state(workspace, duckdb), "POST", "/api/studio/cancel");
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["ok"], true);
+        assert_eq!(response.body["cancelled"], false);
+    }
+
+    #[test]
+    fn studio_cancel_reports_true_when_run_is_active() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request_with_method(
+            make_state_with_current_run(workspace, duckdb),
+            "POST",
+            "/api/studio/cancel",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["ok"], true);
+        assert_eq!(response.body["cancelled"], true);
+    }
 }

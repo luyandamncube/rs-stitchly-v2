@@ -12,10 +12,10 @@
 //! or a tripped leak guard). The build never runs a pipeline, so the "1
 //! pipeline error" code is unused here.
 
-use duckle_duckdb_engine::context::{self, substitute_deep};
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use base64::Engine as _;
+use duckle_duckdb_engine::context::{self, substitute_deep};
 use duckle_duckdb_engine::{is_secret_prop_key, PipelineDoc};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -92,7 +92,9 @@ fn parse_build_args() -> Result<BuildArgs, String> {
                 secrets = match take("--secrets")?.as_str() {
                     "env" => SecretMode::Env,
                     "passphrase" => SecretMode::Passphrase,
-                    other => return Err(format!("--secrets must be env|passphrase, got {}", other)),
+                    other => {
+                        return Err(format!("--secrets must be env|passphrase, got {}", other))
+                    }
                 }
             }
             "--stub" => stub = Some(PathBuf::from(take("--stub")?)),
@@ -102,7 +104,10 @@ fn parse_build_args() -> Result<BuildArgs, String> {
                 match v.as_str() {
                     "windows" | "linux" | "macos" => target_os = Some(v),
                     other => {
-                        return Err(format!("--target-os must be windows|linux|macos, got {}", other))
+                        return Err(format!(
+                            "--target-os must be windows|linux|macos, got {}",
+                            other
+                        ))
                     }
                 }
             }
@@ -183,9 +188,20 @@ fn is_secret_key(key: &str) -> bool {
     // The unambiguous needles (everything except pat/sas). If any matches,
     // the key is genuinely a credential key regardless of pat/sas.
     const STRONG: [&str; 14] = [
-        "password", "passwd", "secret", "token", "apikey", "api_key",
-        "privatekey", "private_key", "accesskey", "access_key",
-        "clientsecret", "client_secret", "connectionstring", "connection_string",
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "apikey",
+        "api_key",
+        "privatekey",
+        "private_key",
+        "accesskey",
+        "access_key",
+        "clientsecret",
+        "client_secret",
+        "connectionstring",
+        "connection_string",
     ];
     if k.contains("credential") || STRONG.iter().any(|n| k.contains(n)) {
         return true;
@@ -260,7 +276,10 @@ fn collect_node_secrets(
         JsonValue::String(s) => {
             // S2: any string value equal to a captured secret context var.
             if s.len() >= SECRET_MIN_LEN && secret_values.iter().any(|sv| sv == s) {
-                let key = parent_key.map(key_namer).filter(|k| !k.is_empty()).unwrap_or_else(|| "SECRET".to_string());
+                let key = parent_key
+                    .map(key_namer)
+                    .filter(|k| !k.is_empty())
+                    .unwrap_or_else(|| "SECRET".to_string());
                 out.push(Detected {
                     value: s.clone(),
                     key,
@@ -396,8 +415,7 @@ fn set_exec(path: &Path) -> Result<(), String> {
         .map_err(|e| format!("stat {}: {}", path.display(), e))?
         .permissions();
     perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)
-        .map_err(|e| format!("chmod {}: {}", path.display(), e))
+    std::fs::set_permissions(path, perms).map_err(|e| format!("chmod {}: {}", path.display(), e))
 }
 
 #[cfg(not(unix))]
@@ -443,7 +461,14 @@ fn duckdb_version(bin: &Path) -> Option<String> {
     let out = cmd.arg("--version").output().ok()?;
     let s = String::from_utf8_lossy(&out.stdout);
     s.split_whitespace()
-        .find(|t| t.starts_with('v') && t[1..].chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
+        .find(|t| {
+            t.starts_with('v')
+                && t[1..]
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_digit())
+                    .unwrap_or(false)
+        })
         .map(|t| t.to_string())
 }
 
@@ -469,11 +494,8 @@ pub fn run() -> Result<(), String> {
     let args = parse_build_args()?;
 
     // 1. Resolve the pipeline.
-    let resolved = context::resolve_workspace(
-        &args.workspace,
-        &args.pipeline_id,
-        args.context.as_deref(),
-    )?;
+    let resolved =
+        context::resolve_workspace(&args.workspace, &args.pipeline_id, args.context.as_deref())?;
     let secret_values = resolved.secret_values.clone();
     let mut doc = resolved.doc;
 
@@ -497,7 +519,10 @@ pub fn run() -> Result<(), String> {
     // duckdb version/platform probe below cannot run a foreign binary, so it
     // degrades to None and the artifact relies on autoloaded extensions.
     let os = args.target_os.as_deref().unwrap_or(std::env::consts::OS);
-    let arch = args.target_arch.as_deref().unwrap_or(std::env::consts::ARCH);
+    let arch = args
+        .target_arch
+        .as_deref()
+        .unwrap_or(std::env::consts::ARCH);
     let is_cross = os != std::env::consts::OS;
     // Stage the artifact contents in a temp dir, then pack them into the
     // single-file payload. --out is the FINAL artifact path (written exactly).
@@ -535,7 +560,11 @@ pub fn run() -> Result<(), String> {
     let mut duckdb_ver: Option<String> = None;
     let mut duckdb_plat: Option<String> = None;
     if let Some(src) = &duckdb_src {
-        let duckdb_name = if os == "windows" { "duckdb.exe" } else { "duckdb" };
+        let duckdb_name = if os == "windows" {
+            "duckdb.exe"
+        } else {
+            "duckdb"
+        };
         let duckdb_dst = root.join("bin").join(duckdb_name);
         copy_file(src, &duckdb_dst)?;
         set_exec(&duckdb_dst)?;
@@ -603,8 +632,8 @@ pub fn run() -> Result<(), String> {
     }
 
     // --- pipeline/<name>.json (redacted, leak-guarded) ---
-    let pipe_json = serde_json::to_string_pretty(&doc)
-        .map_err(|e| format!("serialize pipeline: {}", e))?;
+    let pipe_json =
+        serde_json::to_string_pretty(&doc).map_err(|e| format!("serialize pipeline: {}", e))?;
     let pipe_rel = format!("pipeline/{}.json", name);
     leak_guard(&pipe_json, &pipe_rel, &key_map, &secret_values)?;
     let pipe_dst = root.join("pipeline").join(format!("{}.json", name));
@@ -618,12 +647,15 @@ pub fn run() -> Result<(), String> {
                 continue;
             }
         }
-        let src = args.workspace.join("contexts").join(format!("{}.json", item.id));
+        let src = args
+            .workspace
+            .join("contexts")
+            .join(format!("{}.json", item.id));
         if !src.exists() {
             continue;
         }
-        let text = std::fs::read_to_string(&src)
-            .map_err(|e| format!("read {}: {}", src.display(), e))?;
+        let text =
+            std::fs::read_to_string(&src).map_err(|e| format!("read {}: {}", src.display(), e))?;
         let scrubbed = scrub_context_file(&text, &value_to_key, &mut extra_keys)?;
         let rel = format!("contexts/{}.json", item.id);
         leak_guard(&scrubbed, &rel, &key_map, &secret_values)?;
@@ -800,7 +832,8 @@ fn copy_extensions(
     files: &mut Vec<String>,
 ) -> Result<(), String> {
     let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let entries = std::fs::read_dir(src).map_err(|e| format!("read_dir {}: {}", src.display(), e))?;
+    let entries =
+        std::fs::read_dir(src).map_err(|e| format!("read_dir {}: {}", src.display(), e))?;
     for entry in entries.flatten() {
         let fname = entry.file_name();
         let fname = fname.to_string_lossy();
@@ -818,10 +851,7 @@ fn copy_extensions(
             }
             found.insert(stem.to_string());
             copy_file(&entry.path(), &dst.join(&*fname))?;
-            files.push(format!(
-                "bin/.duckdb/extensions/{}/{}/{}",
-                ver, plat, fname
-            ));
+            files.push(format!("bin/.duckdb/extensions/{}/{}/{}", ver, plat, fname));
         }
     }
     for want in needed.iter() {
@@ -877,9 +907,7 @@ fn scrub_context_file(
                         .and_then(JsonValue::as_str)
                         .map(key_namer)
                         .unwrap_or_default();
-                    if !value.is_empty()
-                        && !extra.iter().any(|(ek, _)| *ek == k)
-                    {
+                    if !value.is_empty() && !extra.iter().any(|(ek, _)| *ek == k) {
                         extra.push((k.clone(), value.clone()));
                     }
                     k
@@ -958,8 +986,14 @@ fn render_manifest(
 ) -> String {
     let mut m = serde_json::Map::new();
     m.insert("name".into(), JsonValue::String(name.to_string()));
-    m.insert("pipelineId".into(), JsonValue::String(pipeline_id.to_string()));
-    m.insert("format".into(), JsonValue::String("self-extracting".to_string()));
+    m.insert(
+        "pipelineId".into(),
+        JsonValue::String(pipeline_id.to_string()),
+    );
+    m.insert(
+        "format".into(),
+        JsonValue::String("self-extracting".to_string()),
+    );
     m.insert(
         "note".into(),
         JsonValue::String(
@@ -979,11 +1013,15 @@ fn render_manifest(
     );
     m.insert(
         "duckdbVersion".into(),
-        duckdb_ver.map(|s| JsonValue::String(s.to_string())).unwrap_or(JsonValue::Null),
+        duckdb_ver
+            .map(|s| JsonValue::String(s.to_string()))
+            .unwrap_or(JsonValue::Null),
     );
     m.insert(
         "duckdbPlatform".into(),
-        duckdb_plat.map(|s| JsonValue::String(s.to_string())).unwrap_or(JsonValue::Null),
+        duckdb_plat
+            .map(|s| JsonValue::String(s.to_string()))
+            .unwrap_or(JsonValue::Null),
     );
     let mut sorted = files.to_vec();
     sorted.sort();

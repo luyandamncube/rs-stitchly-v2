@@ -9,6 +9,108 @@ type AutodetectPayload = {
     sampleRows: Record<string, unknown>[];
 };
 
+type RuntimeBackend = 'mock' | 'http' | 'tauri';
+
+function runtimeBackend(): RuntimeBackend {
+    const configured = String(import.meta.env.VITE_DUCKLE_BACKEND ?? '').toLowerCase();
+    if (configured === 'mock' || configured === 'http' || configured === 'tauri') {
+        return configured;
+    }
+    return isTauri() ? 'tauri' : 'mock';
+}
+
+function httpBaseUrl(): string {
+    return String(import.meta.env.VITE_DUCKLE_HTTP_URL ?? 'http://127.0.0.1:8080').replace(
+        /\/+$/,
+        '',
+    );
+}
+
+async function httpJson<T>(
+    path: string,
+    init?: RequestInit,
+): Promise<T> {
+    const res = await fetch(`${httpBaseUrl()}${path}`, {
+        ...init,
+        headers: {
+            'content-type': 'application/json',
+            ...(init?.headers ?? {}),
+        },
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) {
+        const message =
+            data && typeof data === 'object' && 'error' in data
+                ? String((data as { error: unknown }).error)
+                : `${res.status} ${res.statusText}`;
+        throw new Error(message);
+    }
+    return data as T;
+}
+
+type RunStreamLine =
+    | { kind: 'event'; event: PipelineEvent }
+    | { kind: 'result'; result: RunResult }
+    | { kind: 'error'; error: string };
+
+async function httpRunStream(
+    path: string,
+    payload: Record<string, unknown>,
+    onEvent?: (evt: PipelineEvent) => void,
+): Promise<RunResult> {
+    const res = await fetch(`${httpBaseUrl()}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+        const text = await res.text();
+        let message = `${res.status} ${res.statusText}`;
+        try {
+            const data = text ? JSON.parse(text) : null;
+            if (data && typeof data === 'object' && 'error' in data) {
+                message = String((data as { error: unknown }).error);
+            }
+        } catch {
+            if (text.trim()) message = text.trim();
+        }
+        throw new Error(message);
+    }
+    if (!res.body) throw new Error('HTTP run stream has no response body');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result: RunResult | null = null;
+
+    const consumeLine = (line: string) => {
+        if (!line.trim()) return;
+        const item = JSON.parse(line) as RunStreamLine;
+        if (item.kind === 'event') {
+            onEvent?.(item.event);
+        } else if (item.kind === 'result') {
+            result = item.result;
+        } else if (item.kind === 'error') {
+            throw new Error(item.error);
+        }
+    };
+
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) consumeLine(line);
+    }
+    buffer += decoder.decode();
+    consumeLine(buffer);
+
+    if (!result) throw new Error('HTTP run stream ended without a result');
+    return result;
+}
+
 /**
  * Call into the Rust `autodetect_schema` Tauri command when running
  * under Tauri. Returns `null` in browser mode or on failure, so the
@@ -18,7 +120,19 @@ export async function tauriAutodetect(
     format: string,
     options: Record<string, unknown>,
 ): Promise<AutodetectPayload | null> {
-    if (!isTauri()) return null;
+    const backend = runtimeBackend();
+    if (backend === 'mock') return null;
+    if (backend === 'http') {
+        try {
+            return await httpJson<AutodetectPayload>('/api/studio/autodetect', {
+                method: 'POST',
+                body: JSON.stringify({ format, options }),
+            });
+        } catch (err) {
+            console.warn('HTTP autodetect failed for ' + format, err);
+            return null;
+        }
+    }
     try {
         return await invoke<AutodetectPayload>('autodetect_schema', { format, options });
     } catch (err) {
@@ -89,7 +203,37 @@ export async function runPipeline(
     workspacePath?: string | null,
     pipelineName?: string | null,
 ): Promise<RunResult | null> {
-    if (!isTauri()) return null;
+    const backend = runtimeBackend();
+    if (backend === 'mock') return null;
+    if (backend === 'http') {
+        const startedAt = performance.now();
+        try {
+            return await httpRunStream(
+                '/api/studio/run-stream',
+                {
+                    pipeline: { nodes, edges },
+                    pipelineId: pipelineId ?? null,
+                    pipelineName: pipelineName ?? null,
+                    workspacePath: workspacePath ?? null,
+                },
+                onEvent,
+            );
+        } catch (err) {
+            const result: RunResult = {
+                status: 'error',
+                duration_ms: Math.round(performance.now() - startedAt),
+                nodes: {},
+                preview: [],
+                error: String(err),
+            };
+            onEvent?.({
+                type: 'finished',
+                status: 'error',
+                duration_ms: result.duration_ms,
+            });
+            return result;
+        }
+    }
     const channel = new Channel<PipelineEvent>();
     if (onEvent) channel.onmessage = onEvent;
     try {
@@ -121,7 +265,38 @@ export async function runPipelinePartial(
     workspacePath?: string | null,
     pipelineName?: string | null,
 ): Promise<RunResult | null> {
-    if (!isTauri()) return null;
+    const backend = runtimeBackend();
+    if (backend === 'mock') return null;
+    if (backend === 'http') {
+        const startedAt = performance.now();
+        try {
+            return await httpRunStream(
+                '/api/studio/run-partial-stream',
+                {
+                    pipeline: { nodes, edges },
+                    targetNodeId,
+                    pipelineId: pipelineId ?? null,
+                    pipelineName: pipelineName ?? null,
+                    workspacePath: workspacePath ?? null,
+                },
+                onEvent,
+            );
+        } catch (err) {
+            const result: RunResult = {
+                status: 'error',
+                duration_ms: Math.round(performance.now() - startedAt),
+                nodes: {},
+                preview: [],
+                error: String(err),
+            };
+            onEvent?.({
+                type: 'finished',
+                status: 'error',
+                duration_ms: result.duration_ms,
+            });
+            return result;
+        }
+    }
     const channel = new Channel<PipelineEvent>();
     if (onEvent) channel.onmessage = onEvent;
     try {
@@ -161,7 +336,20 @@ export async function runHistory(
     workspacePath: string,
     pipelineId: string,
 ): Promise<RunRecord[]> {
-    if (!isTauri()) return [];
+    const backend = runtimeBackend();
+    if (backend === 'mock') return [];
+    if (backend === 'http') {
+        const qs = new URLSearchParams({
+            workspacePath,
+            pipelineId,
+        });
+        try {
+            return await httpJson<RunRecord[]>(`/api/studio/history?${qs.toString()}`);
+        } catch (err) {
+            console.warn('HTTP runHistory failed', err);
+            return [];
+        }
+    }
     try {
         return await invoke<RunRecord[]>('run_history', {
             workspacePath,
@@ -438,7 +626,19 @@ export async function workspaceCiStatus(workspacePath: string): Promise<CiStatus
 }
 
 export async function cancelPipeline(): Promise<void> {
-    if (!isTauri()) return;
+    const backend = runtimeBackend();
+    if (backend === 'mock') return;
+    if (backend === 'http') {
+        try {
+            await httpJson<{ ok: boolean; cancelled: boolean }>('/api/studio/cancel', {
+                method: 'POST',
+                body: '{}',
+            });
+        } catch (err) {
+            console.warn('HTTP cancelPipeline failed', err);
+        }
+        return;
+    }
     try {
         await invoke('cancel_pipeline');
     } catch (err) {
@@ -462,7 +662,14 @@ export async function compilePipelineSql(
     // Plan tab) can surface it; swallowing it here previously made the
     // Plan tab show a generic "appears here once it validates" placeholder
     // even when the pipeline had a clear planner error.
-    if (!isTauri()) return null;
+    const backend = runtimeBackend();
+    if (backend === 'mock') return null;
+    if (backend === 'http') {
+        return await httpJson<StageSql[]>('/api/studio/compile', {
+            method: 'POST',
+            body: JSON.stringify({ pipeline: { nodes, edges } }),
+        });
+    }
     return await invoke<StageSql[]>('compile_pipeline', {
         pipeline: { nodes, edges },
     });
