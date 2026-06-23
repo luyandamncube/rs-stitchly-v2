@@ -11,7 +11,7 @@ import {
     Terminal,
     X,
 } from 'lucide-react';
-import type { RunResult } from '../tauri-bridge';
+import type { NodePreview, NodeRunStatus, RunLogLine, RunResult } from '../tauri-bridge';
 import type { ValidationResult } from '../validation';
 import { friendlyError } from '../errors';
 import { copyText } from '../tauri-io';
@@ -257,8 +257,10 @@ function OutputTab({
     // Let the user dismiss the run-error banner. Reset on every new run
     // (runResult is a fresh object each run) so a later failure shows again.
     const [errorDismissed, setErrorDismissed] = useState(false);
+    const [expandedNodeIds, setExpandedNodeIds] = useState<Set<string>>(() => new Set());
     useEffect(() => {
         setErrorDismissed(false);
+        setExpandedNodeIds(new Set());
     }, [runResult]);
     if (isRunning) {
         return (
@@ -283,13 +285,21 @@ function OutputTab({
     }
 
     const totals = runStats(runResult);
-    // Show only the pipeline's terminal results, not a stacked table per
-    // intermediate stage. Fall back to all previews if we can't tell.
-    const terminalSet = new Set(terminalNodeIds);
-    const terminalPreviews =
-        terminalNodeIds.length > 0
-            ? runResult.preview.filter(p => terminalSet.has(p.node_id))
-            : runResult.preview;
+    const previewByNode = new Map(runResult.preview.map(p => [p.node_id, p]));
+    const messagesByNode = new Map<string, RunLogLine[]>();
+    for (const line of runResult.messages ?? []) {
+        const list = messagesByNode.get(line.node_id) ?? [];
+        list.push(line);
+        messagesByNode.set(line.node_id, list);
+    }
+    const toggleNode = (nodeId: string) => {
+        setExpandedNodeIds(prev => {
+            const next = new Set(prev);
+            if (next.has(nodeId)) next.delete(nodeId);
+            else next.add(nodeId);
+            return next;
+        });
+    };
     return (
         <div className="bottom-output">
             <div className="bottom-output-summary">
@@ -308,30 +318,23 @@ function OutputTab({
                 </span>
             </div>
             <div className="bottom-output-rows">
-                {Object.entries(runResult.nodes).map(([nodeId, st]) => (
-                    <div className={'bottom-output-row status-' + st.status} key={nodeId}>
-                        <span className="bottom-output-dot" />
-                        <span className="bottom-output-label">
-                            {nodeLabels[nodeId] ?? nodeId}
-                        </span>
-                        <span className="bottom-output-kind">{st.kind ?? ''}</span>
-                        {st.rows !== undefined ? (
-                            <span className="bottom-output-rows-stat">
-                                {st.rows.toLocaleString()} rows
-                            </span>
-                        ) : (
-                            <span className="bottom-output-rows-stat" />
-                        )}
-                        <span className="bottom-output-time">
-                            {st.duration_ms !== undefined ? st.duration_ms + ' ms' : ''}
-                        </span>
-                        {st.error ? (
-                            <span className="bottom-output-error">
-                                {friendlyError(st.error)}
-                            </span>
-                        ) : null}
-                    </div>
-                ))}
+                {Object.entries(runResult.nodes).map(([nodeId, st]) => {
+                    const preview = previewByNode.get(nodeId);
+                    const messages = messagesByNode.get(nodeId) ?? [];
+                    const isExpanded = expandedNodeIds.has(nodeId);
+                    return (
+                        <OutputNodeAccordion
+                            key={nodeId}
+                            nodeId={nodeId}
+                            status={st}
+                            label={nodeLabels[nodeId] ?? nodeId}
+                            preview={preview}
+                            messages={messages}
+                            expanded={isExpanded}
+                            onToggle={() => toggleNode(nodeId)}
+                        />
+                    );
+                })}
             </div>
             {runResult.error && !errorDismissed ? (
                 <div className="bottom-output-error-banner">
@@ -349,11 +352,83 @@ function OutputTab({
                     </button>
                 </div>
             ) : null}
-            {terminalPreviews.length > 0 ? (
-                <div className="bottom-output-previews">
-                    {terminalPreviews.map(p => (
-                        <PreviewTable key={p.node_id} preview={p} label={nodeLabels[p.node_id]} />
-                    ))}
+        </div>
+    );
+}
+
+function OutputNodeAccordion({
+    nodeId,
+    status,
+    label,
+    preview,
+    messages,
+    expanded,
+    onToggle,
+}: {
+    nodeId: string;
+    status: NodeRunStatus;
+    label: string;
+    preview?: NodePreview;
+    messages: RunLogLine[];
+    expanded: boolean;
+    onToggle: () => void;
+}) {
+    const hasDetails = Boolean(preview || status.error || messages.length > 0);
+    return (
+        <div className={'bottom-output-node status-' + status.status + (expanded ? ' is-expanded' : '')}>
+            <button
+                type="button"
+                className="bottom-output-row"
+                onClick={onToggle}
+                aria-expanded={expanded}
+            >
+                <span className="bottom-output-chevron" aria-hidden="true">
+                    {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                </span>
+                <span className="bottom-output-dot" />
+                <span className="bottom-output-label">{label}</span>
+                <span className="bottom-output-kind">{status.kind ?? ''}</span>
+                {status.rows !== undefined ? (
+                    <span className="bottom-output-rows-stat">
+                        {status.rows.toLocaleString()} rows
+                    </span>
+                ) : (
+                    <span className="bottom-output-rows-stat" />
+                )}
+                <span className="bottom-output-time">
+                    {status.duration_ms !== undefined ? status.duration_ms + ' ms' : ''}
+                </span>
+                <span className="bottom-output-detail-state">
+                    {preview ? `${preview.rows.length} preview rows` : hasDetails ? 'details' : 'no preview'}
+                </span>
+            </button>
+            {expanded ? (
+                <div className="bottom-output-detail">
+                    {status.error ? (
+                        <div className="bottom-output-error">
+                            {friendlyError(status.error)}
+                        </div>
+                    ) : null}
+                    {messages.length > 0 ? (
+                        <div className="bottom-output-messages">
+                            {messages.map((line, i) => (
+                                <div
+                                    key={`${line.node_id}-${i}`}
+                                    className={'bottom-output-message level-' + line.level}
+                                >
+                                    <span className="bottom-output-message-level">{line.level}</span>
+                                    <span className="bottom-output-message-text">{line.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    ) : null}
+                    {preview ? (
+                        <PreviewTable preview={preview} label={label} hideHeader embedded />
+                    ) : (
+                        <div className="bottom-output-no-preview">
+                            No table preview was captured for this node.
+                        </div>
+                    )}
                 </div>
             ) : null}
         </div>
@@ -363,9 +438,13 @@ function OutputTab({
 function PreviewTable({
     preview,
     label,
+    hideHeader,
+    embedded,
 }: {
     preview: { node_id: string; columns: { name: string; type: string }[]; rows: Record<string, unknown>[] };
     label?: string;
+    hideHeader?: boolean;
+    embedded?: boolean;
 }) {
     const { t } = useTranslation();
     const [copiedColumn, setCopiedColumn] = useState<string | null>(null);
@@ -400,10 +479,12 @@ function PreviewTable({
     );
 
     return (
-        <div className="bottom-preview">
-            <div className="bottom-preview-head">
-                {t('bottom.preview')} · <b>{label ?? preview.node_id}</b> · {preview.rows.length} rows
-            </div>
+        <div className={'bottom-preview' + (embedded ? ' bottom-preview-embedded' : '')}>
+            {!hideHeader ? (
+                <div className="bottom-preview-head">
+                    {t('bottom.preview')} · <b>{label ?? preview.node_id}</b> · {preview.rows.length} rows
+                </div>
+            ) : null}
             <div className="bottom-preview-scroll">
                 <table className="bottom-preview-table">
                     <thead>

@@ -5156,27 +5156,50 @@ html[dir='rtl'] .topbar-lang {
 .bottom-output-rows {
     display: flex;
     flex-direction: column;
-    gap: 2px;
     background: var(--bg-2);
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
 }
 
-.bottom-output-row {
-    display: grid;
-    grid-template-columns: 14px minmax(160px, 1fr) 60px 110px 90px 1fr;
-    align-items: center;
-    gap: 10px;
-    padding: 7px 12px;
-    font-size: 12px;
-    color: var(--text-2);
+.bottom-output-node {
     border-bottom: 1px solid var(--border);
-    font-variant-numeric: tabular-nums;
 }
 
-.bottom-output-row:last-child {
+.bottom-output-node:last-child {
     border-bottom: none;
+}
+
+.bottom-output-row {
+    display: grid;
+    grid-template-columns: 18px 14px minmax(160px, 1fr) 60px 110px 90px minmax(90px, 130px);
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 12px;
+    background: transparent;
+    border: none;
+    font-size: 12px;
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.bottom-output-row:hover {
+    background: var(--bg-3);
+}
+
+.bottom-output-node.is-expanded .bottom-output-row {
+    background: var(--bg-3);
+}
+
+.bottom-output-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-4);
 }
 
 .bottom-output-dot {
@@ -5186,7 +5209,7 @@ html[dir='rtl'] .topbar-lang {
     background: var(--success);
 }
 
-.bottom-output-row.status-error .bottom-output-dot {
+.bottom-output-node.status-error .bottom-output-dot {
     background: var(--danger);
 }
 
@@ -5210,12 +5233,79 @@ html[dir='rtl'] .topbar-lang {
     color: var(--text-3);
 }
 
+.bottom-output-detail-state {
+    color: var(--text-4);
+    font-size: 11px;
+    text-align: right;
+}
+
+.bottom-output-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 0 12px;
+    background: var(--bg-2);
+}
+
 .bottom-output-error {
+    margin: 0 12px 0 54px;
     color: var(--danger);
     font-size: 11px;
-    grid-column: 1 / -1;
-    padding-left: 24px;
     line-height: 1.4;
+    white-space: pre-wrap;
+}
+
+.bottom-output-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0 12px 0 54px;
+}
+
+.bottom-output-message {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-1);
+    color: var(--text-2);
+    font-size: 11px;
+}
+
+.bottom-output-message.level-warn {
+    border-color: rgba(255, 183, 77, 0.35);
+}
+
+.bottom-output-message.level-error {
+    border-color: rgba(255, 77, 109, 0.35);
+    color: var(--danger);
+}
+
+.bottom-output-message-level {
+    flex: 0 0 auto;
+    color: var(--text-3);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.bottom-output-message-text {
+    min-width: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.bottom-output-no-preview {
+    margin: 0 12px 0 54px;
+    padding: 8px 10px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-3);
+    font-size: 11px;
+    background: var(--bg-1);
 }
 
 .bottom-output-error-banner {
@@ -5269,6 +5359,14 @@ html[dir='rtl'] .topbar-lang {
     border-radius: 8px;
     background: var(--bg-2);
     overflow: hidden;
+}
+
+.bottom-preview-embedded {
+    border-right: none;
+    border-bottom: none;
+    border-left: none;
+    border-radius: 0;
+    background: transparent;
 }
 
 .bottom-preview-head {
