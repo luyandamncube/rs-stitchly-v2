@@ -370,16 +370,16 @@ export type RunRecord = {
 };
 
 export async function runHistory(
-    workspacePath: string,
+    workspacePath: string | null | undefined,
     pipelineId: string,
 ): Promise<RunRecord[]> {
     const backend = runtimeBackend();
     if (backend === 'mock') return [];
     if (backend === 'http') {
-        const qs = new URLSearchParams({
-            workspacePath,
-            pipelineId,
-        });
+        const qs = new URLSearchParams({ pipelineId });
+        if (workspacePath && workspacePath.trim()) {
+            qs.set('workspacePath', workspacePath);
+        }
         try {
             return await httpJson<RunRecord[]>(`/api/studio/history?${qs.toString()}`);
         } catch (err) {
@@ -387,6 +387,7 @@ export async function runHistory(
             return [];
         }
     }
+    if (!workspacePath) return [];
     try {
         return await invoke<RunRecord[]>('run_history', {
             workspacePath,

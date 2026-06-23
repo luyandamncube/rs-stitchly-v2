@@ -65,7 +65,8 @@ export default function RunHistoryView({ workspacePath, pipelineId, runResultKey
 
     useEffect(() => {
         let alive = true;
-        if (!workspacePath || !pipelineId) {
+        setLoaded(false);
+        if (!pipelineId) {
             setRecords([]);
             setLoaded(true);
             return;
