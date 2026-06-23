@@ -87,8 +87,15 @@ set -eu
     limit 1
   ), '');
   ")"
-  previous_commit="$(printf '%s\n' "$previous_csv" | csv_value)"
 
+  
+  previous_commit="$("$duckdb_bin" "$state_db" -csv -c "
+  select coalesce(max(last_processed_commit), '')
+  from dolt_sync
+  where repo_key = '${repo_key}'
+    and branch = '${branch}';
+  " | tail -n +2 | tr -d '\r' | sed 's/^"//; s/"$//')"
+  
   should_skip="false"
   if [ -n "$previous_commit" ] && [ "$previous_commit" = "$head_commit" ]; then
     should_skip="true"

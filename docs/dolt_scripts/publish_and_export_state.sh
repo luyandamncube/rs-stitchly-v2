@@ -1,68 +1,84 @@
 set -eu
 
-  workspace="${DUCKLE_WORKSPACE:-$PWD}"
-  duckdb_bin="${DUCKLE_DUCKDB_BIN:-duckdb}"
-  state_db=".stitchly/state/dolt_sync.duckdb"
+workspace="${DUCKLE_WORKSPACE:-$PWD}"
+duckdb_bin="${DUCKLE_DUCKDB_BIN:-duckdb}"
+state_db=".stitchly/state/dolt_sync.duckdb"
 
-  json_escape() {
-    sed 's/\\/\\\\/g; s/"/\\"/g'
-  }
+json_escape() {
+  sed 's/\\/\\\\/g; s/"/\\"/g'
+}
 
-  sql_escape() {
-    sed "s/'/''/g"
-  }
+sql_escape() {
+  sed "s/'/''/g"
+}
 
-  json_field() {
-    field="$1"
-    file="$2"
-    "$duckdb_bin" -csv -c "select coalesce(cast(${field} as varchar), '') from read_json_auto('${file}') limit 1" |
-      tail -n +2 |
-      tr -d '\r' |
-      sed 's/^"//; s/"$//'
-  }
+csv_value() {
+  tail -n +2 | tr -d '\r' | sed 's/^"//; s/"$//'
+}
 
-  cd "$workspace"
+json_field_at() {
+  field="$1"
+  file="$2"
+  offset="$3"
+  "$duckdb_bin" -csv -c "select coalesce(cast(${field} as varchar), '') from read_json_auto('${file}') limit 1 offset ${offset}" |
+    csv_value
+}
 
-  if [ ! -s "$DUCKLE_INPUT_PATH" ]; then
-    echo "publish_and_update_state: upstream input file is empty or missing" >&2
-    exit 1
-  fi
+cd "$workspace"
 
-  repo_key="$(json_field repo_key "$DUCKLE_INPUT_PATH")"
-  branch="$(json_field branch "$DUCKLE_INPUT_PATH")"
-  repo_path="$(json_field repo_path "$DUCKLE_INPUT_PATH")"
-  table_name="$(json_field table_name "$DUCKLE_INPUT_PATH")"
-  previous_commit="$(json_field previous_commit "$DUCKLE_INPUT_PATH")"
-  head_commit="$(json_field head_commit "$DUCKLE_INPUT_PATH")"
-  export_mode="$(json_field export_mode "$DUCKLE_INPUT_PATH")"
-  reason="$(json_field reason "$DUCKLE_INPUT_PATH")"
-  stage_path="$(json_field stage_path "$DUCKLE_INPUT_PATH")"
-  snapshot_path="$(json_field snapshot_path "$DUCKLE_INPUT_PATH")"
-  row_count="$(json_field row_count "$DUCKLE_INPUT_PATH")"
-  file_size_bytes="$(json_field file_size_bytes "$DUCKLE_INPUT_PATH")"
-  export_validation_ok="$(json_field export_validation_ok "$DUCKLE_INPUT_PATH")"
-  export_validation_status="$(json_field export_validation_status "$DUCKLE_INPUT_PATH")"
+if [ ! -s "$DUCKLE_INPUT_PATH" ]; then
+  echo "publish_and_update_state: upstream input file is empty or missing" >&2
+  exit 1
+fi
+
+input_rows="$(
+  "$duckdb_bin" -csv -c "select count(*) as n from read_json_auto('${DUCKLE_INPUT_PATH}')" |
+    csv_value
+)"
+
+if [ -z "$input_rows" ] || [ "$input_rows" -eq 0 ]; then
+  echo "publish_and_update_state: upstream input has no rows" >&2
+  exit 1
+fi
+
+mkdir -p "$(dirname "$state_db")"
+
+idx=0
+while [ "$idx" -lt "$input_rows" ]; do
+  repo_key="$(json_field_at repo_key "$DUCKLE_INPUT_PATH" "$idx")"
+  branch="$(json_field_at branch "$DUCKLE_INPUT_PATH" "$idx")"
+  repo_path="$(json_field_at repo_path "$DUCKLE_INPUT_PATH" "$idx")"
+  table_name="$(json_field_at table_name "$DUCKLE_INPUT_PATH" "$idx")"
+  previous_commit="$(json_field_at previous_commit "$DUCKLE_INPUT_PATH" "$idx")"
+  head_commit="$(json_field_at head_commit "$DUCKLE_INPUT_PATH" "$idx")"
+  export_mode="$(json_field_at export_mode "$DUCKLE_INPUT_PATH" "$idx")"
+  reason="$(json_field_at reason "$DUCKLE_INPUT_PATH" "$idx")"
+  stage_path="$(json_field_at stage_path "$DUCKLE_INPUT_PATH" "$idx")"
+  snapshot_path="$(json_field_at snapshot_path "$DUCKLE_INPUT_PATH" "$idx")"
+  row_count="$(json_field_at row_count "$DUCKLE_INPUT_PATH" "$idx")"
+  file_size_bytes="$(json_field_at file_size_bytes "$DUCKLE_INPUT_PATH" "$idx")"
+  export_validation_ok="$(json_field_at export_validation_ok "$DUCKLE_INPUT_PATH" "$idx")"
+  export_validation_status="$(json_field_at export_validation_status "$DUCKLE_INPUT_PATH" "$idx")"
 
   if [ "$export_validation_ok" != "true" ]; then
-    echo "publish_and_update_state: validation failed: $export_validation_status" >&2
+    echo "publish_and_update_state: row $idx validation failed: $export_validation_status" >&2
     exit 1
   fi
 
   if [ ! -s "$stage_path" ]; then
-    echo "publish_and_update_state: staged file missing or empty: $stage_path" >&2
+    echo "publish_and_update_state: row $idx staged file missing or empty: $stage_path" >&2
     exit 1
   fi
 
   mkdir -p "$(dirname "$snapshot_path")"
-  mkdir -p "$(dirname "$state_db")"
 
-  tmp_publish="${snapshot_path}.tmp.$$"
+  tmp_publish="${snapshot_path}.tmp.$$.$idx"
   rm -f "$tmp_publish"
 
   cp "$stage_path" "$tmp_publish"
 
   if [ ! -s "$tmp_publish" ]; then
-    echo "publish_and_update_state: temp publish file missing or empty: $tmp_publish" >&2
+    echo "publish_and_update_state: row $idx temp publish file missing or empty: $tmp_publish" >&2
     exit 1
   fi
 
@@ -71,7 +87,7 @@ set -eu
   published_size="$(wc -c < "$snapshot_path" | tr -d ' ')"
 
   if [ "$published_size" != "$file_size_bytes" ]; then
-    echo "publish_and_update_state: published size mismatch staged=$file_size_bytes published=$published_size" >&2
+    echo "publish_and_update_state: row $idx published size mismatch staged=$file_size_bytes published=$published_size" >&2
     exit 1
   fi
 
@@ -160,3 +176,6 @@ set -eu
   printf '%s' ',"published_size_bytes":'
   printf '%s' "$published_size"
   printf '%s\n' ',"publish_ok":true,"state_updated":true}'
+
+  idx=$((idx + 1))
+done
