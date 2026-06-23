@@ -21,6 +21,10 @@ json_field_at() {
 
 cd "$workspace"
 
+if [ "${DUCKLE_INPUT_ROW_COUNT:-}" = "0" ]; then
+  exit 0
+fi
+
 if [ ! -s "$DUCKLE_INPUT_PATH" ]; then
   echo "export_tables_to_stage: upstream input file is empty or missing" >&2
   exit 1
@@ -32,8 +36,7 @@ input_rows="$(
 )"
 
 if [ -z "$input_rows" ] || [ "$input_rows" -eq 0 ]; then
-  echo "export_tables_to_stage: upstream input has no rows" >&2
-  exit 1
+  exit 0
 fi
 
 idx=0

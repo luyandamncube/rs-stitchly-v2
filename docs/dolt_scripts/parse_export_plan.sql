@@ -29,6 +29,7 @@
       true as synthetic_error
     from raw
     where stdout_text = ''
+      and coalesce(shell_exit_code, -1) <> 0
   ),
   parsed as (
     select

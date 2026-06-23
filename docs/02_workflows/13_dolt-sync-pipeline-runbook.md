@@ -23,7 +23,7 @@ Use this with:
 | Local clone | `.stitchly/cache/dolt/rates/repo` |
 | Published artifact | `artifacts/dolt/rates/master/us_treasury/snapshots/commit=<head_commit>/data.parquet` |
 
-The current workflow performs repo-level idempotency. First run exports and publishes a snapshot. A second run sees the same processed commit and routes to the skip branch.
+The current workflow performs repo-level idempotency. First run exports and publishes a snapshot. A second run sees the same processed commit and emits zero rows from `export_gate`, so downstream export/publish stages no-op successfully.
 
 ## Graph
 
@@ -31,15 +31,8 @@ The current workflow performs repo-level idempotency. First run exports and publ
 repo_config
   -> sync_repo
   -> parse_sync_result
-  -> skip_gate
-
-skip_gate.case_1
-  -> fail_sync
-
-skip_gate.case_2
-  -> log_skip
-
-skip_gate.default
+  -> assert_sync_ok
+  -> export_gate
   -> plan_exports
   -> parse_export_plan
   -> export_tables_to_stage
@@ -56,16 +49,15 @@ skip_gate.default
 | 1 | `repo_config` | `code.sql` | None | One config row for repo, paths, and branch. |
 | 2 | `sync_repo` | `code.shell` | `repo_config` | Clone/pull repo, resolve head commit, compare state. |
 | 3 | `parse_sync_result` | `code.sql` | `sync_repo` | Typed sync metadata with `sync_ok` and `sync_status`. |
-| 4 | `skip_gate` | `ctl.switch` | `parse_sync_result` | Route failed, unchanged, or changed sync rows. |
-| 5 | `fail_sync` | `ctl.die` | `skip_gate.case_1` | Fail only if the failed-sync branch has rows. |
-| 6 | `log_skip` | `ctl.log` | `skip_gate.case_2` | Log unchanged commit skip. |
-| 7 | `plan_exports` | `code.shell` | `skip_gate.default` | Emit one JSONL export plan row per table. |
-| 8 | `parse_export_plan` | `code.sql` | `plan_exports` | Typed export plan rows with `plan_ok`. |
-| 9 | `export_tables_to_stage` | `code.shell` | `parse_export_plan` | Export table to staged Parquet. |
-| 10 | `parse_export_result` | `code.sql` | `export_tables_to_stage` | Typed export result with file size and row count. |
-| 11 | `validate_exports` | `code.sql` | `parse_export_result` | Metadata validation before publish. |
-| 12 | `publish_and_update_state` | `code.shell` | `validate_exports` | Publish artifact and update state DB. |
-| 13 | `log_done` | `ctl.log` | `publish_and_update_state` | Log successful publish. |
+| 4 | `assert_sync_ok` | `code.sql` | `parse_sync_result` | Fail with SQL `error(...)` when sync failed. |
+| 5 | `export_gate` | `code.sql` | `assert_sync_ok` | Pass only rows where export is needed. Unchanged commits emit zero rows. |
+| 6 | `plan_exports` | `code.shell` | `export_gate` | Emit one JSONL export plan row per table, or no-op on zero rows. |
+| 7 | `parse_export_plan` | `code.sql` | `plan_exports` | Typed export plan rows with `plan_ok`; empty successful stdout emits zero rows. |
+| 8 | `export_tables_to_stage` | `code.shell` | `parse_export_plan` | Export table to staged Parquet, or no-op on zero rows. |
+| 9 | `parse_export_result` | `code.sql` | `export_tables_to_stage` | Typed export result with file size and row count; empty successful stdout emits zero rows. |
+| 10 | `validate_exports` | `code.sql` | `parse_export_result` | Metadata validation before publish. |
+| 11 | `publish_and_update_state` | `code.shell` | `validate_exports` | Publish artifact and update state DB, or no-op on zero rows. |
+| 12 | `log_done` | `ctl.log` | `publish_and_update_state` | Log successful publish/no-op completion. |
 
 ## Node Configs
 
@@ -76,6 +68,8 @@ Canonical copy/paste payloads live in `docs/dolt_scripts/`.
 | `repo_config` | `code.sql` | `docs/dolt_scripts/repo_config.sql` |
 | `sync_repo` | `code.shell` | `docs/dolt_scripts/sync_repo.sh` |
 | `parse_sync_result` | `code.sql` | `docs/dolt_scripts/parse_sync_result.sh` |
+| `assert_sync_ok` | `code.sql` | `docs/dolt_scripts/assert_sync_ok.sql` |
+| `export_gate` | `code.sql` | `docs/dolt_scripts/export_gate.sql` |
 | `plan_exports` | `code.shell` | `docs/dolt_scripts/plan_exports.sh` |
 | `parse_export_plan` | `code.sql` | `docs/dolt_scripts/parse_export_plan.sql` |
 | `export_tables_to_stage` | `code.shell` | `docs/dolt_scripts/export_tables_to_stage.sh` |
@@ -180,60 +174,23 @@ sync_ok = true
 sync_status = changed
 ```
 
-### `skip_gate`
+### `assert_sync_ok`
 
-Type: `ctl.switch`
-
-Purpose: split the control row into failure, skip, or export paths.
-
-Branch conditions:
-
-| key | value |
-|---|---|
-| `sync_failed` | `sync_ok = false` |
-| `skip` | `should_skip = true` |
-
-Real output ports:
-
-| Port | Route |
-|---|---|
-| `case_1` | `fail_sync` |
-| `case_2` | `log_skip` |
-| `default` / `else` | `plan_exports` |
-
-Notes:
-
-- Branch `key` is only a label.
-- Branch `value` is the SQL condition.
-- `ctl.switch` is first-match-wins.
-- The default branch is reached when no case condition matches.
-
-### `fail_sync`
-
-Type: `ctl.die`
+Type: `code.sql`
 
 Purpose: fail the workflow if `sync_repo` failed or emitted invalid metadata.
 
-Config:
+Canonical body: `docs/dolt_scripts/assert_sync_ok.sql`.
 
-| Field | Value |
-|---|---|
-| Message | `Dolt sync failed or produced invalid metadata` |
-| Condition | `has-rows` |
+### `export_gate`
 
-Do not use `always` here. Empty switch branches still execute downstream nodes, so `always` fails even when `case_1` has no rows.
+Type: `code.sql`
 
-### `log_skip`
+Purpose: pass only sync rows that need export. On unchanged commits this emits zero rows.
 
-Type: `ctl.log`
+Canonical body: `docs/dolt_scripts/export_gate.sql`.
 
-Purpose: record an idempotent skip.
-
-Message:
-
-```text
-Dolt sync skipped: repo already processed at current commit ({rows} row)
-```
+Do not use `ctl.switch` as an execution gate for this workflow. `ctl.switch` splits rows into branch relations, but downstream stages can still execute with zero-row inputs.
 
 ### `plan_exports`
 
@@ -434,12 +391,12 @@ create table if not exists dolt_sync (
 
 Type: `ctl.log`
 
-Purpose: log successful publish.
+Purpose: log successful publish/no-op completion.
 
 Message:
 
 ```text
-Dolt sync published {rows} artifact row(s)
+Dolt rates sync complete; published rows: {rows}
 ```
 
 ## Idempotency Check
@@ -453,13 +410,13 @@ should_skip = true
 sync_status = unchanged
 ```
 
-Expected route:
+Expected gate behavior:
 
 ```text
-skip_gate.case_2 -> log_skip
+export_gate rows = 0
 ```
 
-The export and publish branch should not run.
+Export and publish scripts still execute as stages, but they should no-op successfully on zero upstream rows.
 
 ## Operational Notes
 
@@ -540,8 +497,8 @@ dolt table export ... >&2
 | Symptom | Likely fix |
 |---|---|
 | `parse_sync_result` parser error near `with` | Remove leading `WITH`; upstream-connected `code.sql` must start with comma CTE or final `select`. |
-| `fail_sync` fires even though `plan_exports` runs | Set `fail_sync` condition to `has-rows`, not `always`. |
-| `ctl.switch` routes unexpectedly | Confirm branch row `value` contains SQL condition; `key` is only a label. |
+| `fail_sync` fires even though `plan_exports` runs | Old switch-gated graph is in use. Rebuild with `assert_sync_ok -> export_gate`. |
+| Export stages run on unchanged commits | Confirm `export_gate` emits zero rows and downstream scripts treat zero rows as no-op. |
 | `plan_exports: no base tables found` | Use `dolt ls` instead of `SHOW FULL TABLES`. |
 | `/bin/sh: printf: usage` | Replace long multiline `printf` blocks with chunked `printf '%s'` calls. |
 | `end of file unexpected (expecting done)` | Remove heredocs or check loop/heredoc termination in UI-pasted shell. |

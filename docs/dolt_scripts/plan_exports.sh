@@ -21,6 +21,15 @@
     "$duckdb_bin" -csv "$DUCKLE_DUCKDB_DATABASE" -c "select coalesce(cast(\"${col}\" as varchar), '') from \"$DUCKLE_INPUT_TABLE\" limit 1" | csv_value
   }
 
+  input_rows="${DUCKLE_INPUT_ROW_COUNT:-}"
+  if [ -z "$input_rows" ] && [ -n "${DUCKLE_INPUT_TABLE:-}" ]; then
+    input_rows="$("$duckdb_bin" -csv "$DUCKLE_DUCKDB_DATABASE" -c "select count(*) as n from \"$DUCKLE_INPUT_TABLE\"" | csv_value)"
+  fi
+
+  if [ "${input_rows:-0}" -eq 0 ]; then
+    exit 0
+  fi
+
   repo_key="$(input_value repo_key)"
   branch="$(input_value branch)"
   repo_path="$(input_value repo_path)"
