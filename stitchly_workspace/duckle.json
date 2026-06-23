@@ -3,15 +3,15 @@
   "engine": "duckdb",
   "jobs": [
     {
-      "id": "j1",
-      "name": "orders_etl",
+      "id": "p_dolt_rates_sync",
+      "name": "dolt_rates_sync",
       "dirty": false
     },
     {
-      "id": "p_mqq7j1ba_t9grz",
-      "name": "dolt_repo_sync_to_parquet",
+      "id": "p_dolt_earnings_sync",
+      "name": "dolt_earnings_sync",
       "dirty": false
     }
   ],
-  "activeJobId": "p_mqq7j1ba_t9grz"
+  "activeJobId": "p_dolt_earnings_sync"
 }
