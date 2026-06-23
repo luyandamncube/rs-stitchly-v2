@@ -1,15 +1,29 @@
 , raw as (
     select
-      trim(coalesce(stdout, '')) as stdout_json,
+      trim(coalesce(stdout, '')) as stdout_text,
       coalesce(stderr, '') as stderr_text,
       try_cast(exit_code as integer) as shell_exit_code,
       try_cast(duration_ms as bigint) as shell_duration_ms
     from input
   ),
+  lines as (
+    select
+      row_number() over () as line_number,
+      trim(line) as stdout_line
+    from raw,
+      unnest(string_split(stdout_text, chr(10))) as t(line)
+    where trim(line) <> ''
+  ),
   parsed as (
     select
       *,
-      try_cast(nullif(stdout_json, '') as json) as payload
+      (
+        select try_cast(stdout_line as json)
+        from lines
+        where try_cast(stdout_line as json) is not null
+        order by line_number desc
+        limit 1
+      ) as payload
     from raw
   ),
   fields as (
@@ -26,7 +40,7 @@
       ) as should_skip,
       shell_exit_code,
       shell_duration_ms,
-      stdout_json as raw_stdout,
+      stdout_text as raw_stdout,
       stderr_text as raw_stderr,
       payload is not null as parsed_ok
     from parsed

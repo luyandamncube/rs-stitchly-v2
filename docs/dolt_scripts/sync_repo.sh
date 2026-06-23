@@ -39,11 +39,11 @@ set -eu
   cd "$repo_dir"
 
   if ! dolt config --local --get user.name >/dev/null 2>&1; then
-    dolt config --local --add user.name "Stitchly Sync"
+    dolt config --local --add user.name "Stitchly Sync" >&2
   fi
 
   if ! dolt config --local --get user.email >/dev/null 2>&1; then
-    dolt config --local --add user.email "stitchly-sync@example.local"
+    dolt config --local --add user.email "stitchly-sync@example.local" >&2
   fi
 
   dolt checkout "$branch" >&2
