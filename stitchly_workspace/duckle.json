@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "engine": "duckdb",
+  "jobs": [
+    {
+      "id": "j1",
+      "name": "orders_etl",
+      "dirty": false
+    },
+    {
+      "id": "p_mqq7j1ba_t9grz",
+      "name": "dolt_repo_sync_to_parquet",
+      "dirty": false
+    }
+  ],
+  "activeJobId": "p_mqq7j1ba_t9grz"
+}

@@ -1,0 +1,86 @@
+{
+  "nodes": [
+    {
+      "id": "s1",
+      "type": "source",
+      "position": {
+        "x": 60,
+        "y": 140
+      },
+      "data": {
+        "label": "CSV",
+        "componentId": "src.csv",
+        "properties": {
+          "hasHeader": true
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false
+    },
+    {
+      "id": "t1",
+      "type": "transform",
+      "position": {
+        "x": 343.66283107267634,
+        "y": 137.2528766954927
+      },
+      "data": {
+        "label": "Filter",
+        "componentId": "xf.filter",
+        "properties": {
+          "predicate": "status = 'paid'"
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 171
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "k1",
+      "type": "sink",
+      "position": {
+        "x": 620,
+        "y": 140
+      },
+      "data": {
+        "label": "Parquet",
+        "componentId": "snk.parquet",
+        "properties": {}
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "s1",
+      "sourceHandle": "main",
+      "target": "t1",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e2",
+      "source": "t1",
+      "sourceHandle": "main",
+      "target": "k1",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+[
+  {
+    "id": "root",
+    "name": "Duckle Project",
+    "type": "project"
+  },
+  {
+    "id": "pipelines",
+    "name": "Pipelines",
+    "type": "folder",
+    "parentId": "root"
+  },
+  {
+    "id": "connections",
+    "name": "Connections",
+    "type": "folder",
+    "parentId": "root"
+  },
+  {
+    "id": "contexts",
+    "name": "Contexts",
+    "type": "folder",
+    "parentId": "root"
+  },
+  {
+    "id": "routines",
+    "name": "Routines",
+    "type": "folder",
+    "parentId": "root"
+  },
+  {
+    "id": "docs",
+    "name": "Documentation",
+    "type": "folder",
+    "parentId": "root"
+  },
+  {
+    "id": "j1",
+    "name": "orders_etl",
+    "type": "pipeline",
+    "parentId": "pipelines"
+  },
+  {
+    "id": "p_mqq7j1ba_t9grz",
+    "name": "dolt_repo_sync_to_parquet",
+    "type": "pipeline",
+    "parentId": "pipelines"
+  }
+]

@@ -1,0 +1,270 @@
+{
+  "nodes": [
+    {
+      "id": "n_mqq7jgjc_gb69h",
+      "type": "transform",
+      "position": {
+        "x": 375.51436305733904,
+        "y": 158.88007726448637
+      },
+      "data": {
+        "label": "Shell Command",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash"
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false
+    },
+    {
+      "id": "n_mqq7kim6_55ddu",
+      "type": "transform",
+      "position": {
+        "x": 658.1312728400304,
+        "y": 155.90985099855808
+      },
+      "data": {
+        "label": "Inline SQL",
+        "componentId": "code.sql",
+        "properties": {
+          "loadSpatial": false
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "n_mqq7m2am_8jh1r",
+      "type": "transform",
+      "position": {
+        "x": 944.3496508911803,
+        "y": 152.61870760494932
+      },
+      "data": {
+        "label": "Inline SQL",
+        "componentId": "code.sql",
+        "properties": {
+          "loadSpatial": false
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "n_mqq7mjub_nadip",
+      "type": "transform",
+      "position": {
+        "x": 1237.514363057339,
+        "y": 156.88007726448637
+      },
+      "data": {
+        "label": "Shell Command",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash"
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "n_mqq7n772_0qtsv",
+      "type": "transform",
+      "position": {
+        "x": 1534.763747680577,
+        "y": 143.34354084475572
+      },
+      "data": {
+        "label": "Inline SQL",
+        "componentId": "code.sql",
+        "properties": {
+          "loadSpatial": false
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "n_mqq7nwte_69lc6",
+      "type": "transform",
+      "position": {
+        "x": 1860.1153166935187,
+        "y": 156.2861608375722
+      },
+      "data": {
+        "label": "Data Contract",
+        "componentId": "qa.contract",
+        "properties": {}
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "n_mqq7okfv_hz6r8",
+      "type": "sink",
+      "position": {
+        "x": 2149.6097934898935,
+        "y": 152.20845531270467
+      },
+      "data": {
+        "label": "Parquet",
+        "componentId": "snk.parquet",
+        "properties": {
+          "mode": "overwrite",
+          "compression": "snappy",
+          "rowGroupSize": 100000,
+          "maxPartitions": 10000
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "n_mqq7pg8d_9kz7c",
+      "type": "transform",
+      "position": {
+        "x": 2497.867843289357,
+        "y": 134.0862360032427
+      },
+      "data": {
+        "label": "Inline SQL",
+        "componentId": "code.sql",
+        "properties": {
+          "loadSpatial": false
+        }
+      },
+      "measured": {
+        "width": 220,
+        "height": 127
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "n_mqq7ppy9_k5ysy",
+      "type": "transform",
+      "position": {
+        "x": 2812.5655806045393,
+        "y": 150.9021456307715
+      },
+      "data": {
+        "label": "Log Message",
+        "componentId": "ctl.log",
+        "properties": {}
+      },
+      "measured": {
+        "width": 220,
+        "height": 103
+      },
+      "selected": false,
+      "dragging": false
+    }
+  ],
+  "edges": [
+    {
+      "type": "duckle",
+      "source": "n_mqq7jgjc_gb69h",
+      "sourceHandle": "main",
+      "target": "n_mqq7kim6_55ddu",
+      "targetHandle": "main",
+      "data": {
+        "connectionType": "main"
+      },
+      "id": "xy-edge__n_mqq7jgjc_gb69hmain-n_mqq7kim6_55ddumain"
+    },
+    {
+      "type": "duckle",
+      "source": "n_mqq7kim6_55ddu",
+      "sourceHandle": "main",
+      "target": "n_mqq7m2am_8jh1r",
+      "targetHandle": "main",
+      "data": {
+        "connectionType": "main"
+      },
+      "id": "xy-edge__n_mqq7kim6_55ddumain-n_mqq7m2am_8jh1rmain"
+    },
+    {
+      "type": "duckle",
+      "source": "n_mqq7m2am_8jh1r",
+      "sourceHandle": "main",
+      "target": "n_mqq7mjub_nadip",
+      "targetHandle": "main",
+      "data": {
+        "connectionType": "main"
+      },
+      "id": "xy-edge__n_mqq7m2am_8jh1rmain-n_mqq7mjub_nadipmain"
+    },
+    {
+      "type": "duckle",
+      "source": "n_mqq7mjub_nadip",
+      "sourceHandle": "main",
+      "target": "n_mqq7n772_0qtsv",
+      "targetHandle": "main",
+      "data": {
+        "connectionType": "main"
+      },
+      "id": "xy-edge__n_mqq7mjub_nadipmain-n_mqq7n772_0qtsvmain"
+    },
+    {
+      "type": "duckle",
+      "source": "n_mqq7n772_0qtsv",
+      "sourceHandle": "main",
+      "target": "n_mqq7nwte_69lc6",
+      "targetHandle": "main",
+      "data": {
+        "connectionType": "main"
+      },
+      "id": "xy-edge__n_mqq7n772_0qtsvmain-n_mqq7nwte_69lc6main"
+    },
+    {
+      "type": "duckle",
+      "source": "n_mqq7nwte_69lc6",
+      "sourceHandle": "main",
+      "target": "n_mqq7okfv_hz6r8",
+      "targetHandle": "main",
+      "data": {
+        "connectionType": "main"
+      },
+      "id": "xy-edge__n_mqq7nwte_69lc6main-n_mqq7okfv_hz6r8main"
+    },
+    {
+      "type": "duckle",
+      "source": "n_mqq7pg8d_9kz7c",
+      "sourceHandle": "main",
+      "target": "n_mqq7ppy9_k5ysy",
+      "targetHandle": "main",
+      "data": {
+        "connectionType": "main"
+      },
+      "id": "xy-edge__n_mqq7pg8d_9kz7cmain-n_mqq7ppy9_k5ysymain"
+    }
+  ]
+}
