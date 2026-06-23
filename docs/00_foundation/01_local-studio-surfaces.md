@@ -129,7 +129,11 @@ The existing HTTP backend is the runner web panel, implemented in
 It can be launched manually:
 
 ```bash
-duckle-runner serve --host 127.0.0.1 --port 8080 --workspace /path/to/workspace --duckdb /path/to/duckdb
+cargo run -p duckle-runner -- serve \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --workspace /home/mncubel/rs-stitchly-v2/stitchly_workspace \
+  --duckdb /snap/bin/duckdb
 ```
 
 The desktop app can also spawn it through the `open_web_panel` Tauri command.

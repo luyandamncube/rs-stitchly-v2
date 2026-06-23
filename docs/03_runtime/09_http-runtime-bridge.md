@@ -32,11 +32,11 @@ Extend the existing `duckle-runner serve` command first.
 Existing command:
 
 ```bash
-duckle-runner serve \
+cargo run -p duckle-runner -- serve \
   --host 127.0.0.1 \
   --port 8080 \
-  --workspace /path/to/workspace \
-  --duckdb /path/to/duckdb
+  --workspace /home/mncubel/rs-stitchly-v2/stitchly_workspace \
+  --duckdb /snap/bin/duckdb
 ```
 
 Existing server purpose:
@@ -240,8 +240,8 @@ Command:
 cargo run -p duckle-runner -- serve \
   --host 127.0.0.1 \
   --port 8080 \
-  --workspace . \
-  --duckdb /path/to/duckdb
+  --workspace /home/mncubel/rs-stitchly-v2/stitchly_workspace \
+  --duckdb /snap/bin/duckdb
 ```
 
 Checks:

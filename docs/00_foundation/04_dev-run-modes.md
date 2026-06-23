@@ -62,8 +62,8 @@ Command shape:
 cargo run -p duckle-runner -- serve \
   --host 127.0.0.1 \
   --port 8080 \
-  --workspace /path/to/workspace \
-  --duckdb /path/to/duckdb
+  --workspace /home/mncubel/rs-stitchly-v2/stitchly_workspace \
+  --duckdb /snap/bin/duckdb
 
 VITE_DUCKLE_BACKEND=http \
 VITE_DUCKLE_HTTP_URL=http://127.0.0.1:8080 \
@@ -142,7 +142,11 @@ For browser UI with real execution, once implemented:
 
 ```bash
 # terminal 1
-cargo run -p duckle-runner -- serve --host 127.0.0.1 --port 8080 --workspace . --duckdb /path/to/duckdb
+cargo run -p duckle-runner -- serve \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --workspace /home/mncubel/rs-stitchly-v2/stitchly_workspace \
+  --duckdb /snap/bin/duckdb
 
 # terminal 2
 VITE_DUCKLE_BACKEND=http VITE_DUCKLE_HTTP_URL=http://127.0.0.1:8080 npm --prefix frontend run dev

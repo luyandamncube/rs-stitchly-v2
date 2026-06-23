@@ -148,11 +148,11 @@ Manual runner mode is also possible once a runner binary and DuckDB CLI are
 available:
 
 ```bash
-target/release-runner/duckle-runner serve \
+cargo run -p duckle-runner -- serve \
   --host 127.0.0.1 \
   --port 8080 \
-  --workspace /path/to/workspace \
-  --duckdb /path/to/duckdb
+  --workspace /home/mncubel/rs-stitchly-v2/stitchly_workspace \
+  --duckdb /snap/bin/duckdb
 ```
 
 The operations panel is not the full authoring studio. It is a browser
