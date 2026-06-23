@@ -20,8 +20,8 @@
 
 use duckle_connectors::CsvConnector;
 use duckle_duckdb_engine::{
-    append_run_record, compile_pipeline_sql, load_run_history, DuckdbEngine, PipelineDoc,
-    PipelineEvent, RunRecord,
+    append_run_record, compile_pipeline_sql, is_secret_prop_key, load_run_history, DuckdbEngine,
+    PipelineDoc, PipelineEvent, RunRecord,
 };
 use duckle_plugin_sdk::{InspectError, SchemaInspector};
 use serde_json::{json, Value};
@@ -565,6 +565,371 @@ fn studio_pipeline_id_from_query(query: &HashMap<String, String>) -> Result<Stri
         .ok_or_else(|| "missing pipelineId".to_string())
 }
 
+fn studio_pipeline_name_from_query(query: &HashMap<String, String>) -> Option<String> {
+    query
+        .get("pipelineName")
+        .or_else(|| query.get("name"))
+        .filter(|s| !s.trim().is_empty())
+        .cloned()
+}
+
+fn is_safe_workspace_id(id: &str) -> bool {
+    !id.trim().is_empty() && !id.contains('/') && !id.contains('\\') && id != "." && id != ".."
+}
+
+fn pipeline_name_from_repo(workspace: &Path, pipeline_id: &str) -> Option<String> {
+    let repo = read_json_file(&workspace.join("repository.json")).ok()?;
+    repo.as_array()?.iter().find_map(|item| {
+        let item_type = item.get("type").and_then(|v| v.as_str())?;
+        let item_id = item.get("id").and_then(|v| v.as_str())?;
+        if item_type == "pipeline" && item_id == pipeline_id {
+            item.get("name")
+                .and_then(|v| v.as_str())
+                .map(|name| name.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn resolve_studio_pipeline(
+    workspace: &Path,
+    query: &HashMap<String, String>,
+) -> Result<(String, String, PathBuf, Value), String> {
+    let pipeline_id = match query
+        .get("pipelineId")
+        .or_else(|| query.get("id"))
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(id) => id.to_string(),
+        None => {
+            let name = studio_pipeline_name_from_query(query)
+                .ok_or_else(|| "missing pipelineId or pipelineName".to_string())?;
+            let repo = read_json_file(&workspace.join("repository.json"))?;
+            repo.as_array()
+                .and_then(|items| {
+                    items.iter().find_map(|item| {
+                        let item_type = item.get("type").and_then(|v| v.as_str())?;
+                        let item_name = item.get("name").and_then(|v| v.as_str())?;
+                        if item_type == "pipeline" && item_name == name {
+                            item.get("id")
+                                .and_then(|v| v.as_str())
+                                .map(|id| id.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .ok_or_else(|| format!("pipelineName not found: {}", name))?
+        }
+    };
+    if !is_safe_workspace_id(&pipeline_id) {
+        return Err("invalid pipelineId".into());
+    }
+
+    let file = workspace
+        .join("pipelines")
+        .join(format!("{}.json", pipeline_id));
+    let value = read_json_file(&file)?;
+    let name = pipeline_name_from_repo(workspace, &pipeline_id)
+        .or_else(|| {
+            value
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|name| name.to_string())
+        })
+        .unwrap_or_else(|| pipeline_id.clone());
+    Ok((pipeline_id, name, file, value))
+}
+
+fn truncate_string(value: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn redact_and_summarize_config(value: &Value, redact_secrets: bool, summarize: bool) -> Value {
+    match value {
+        Value::Object(obj) => {
+            let mut next = serde_json::Map::new();
+            for (key, child) in obj {
+                if redact_secrets && is_secret_prop_key(key) {
+                    next.insert(key.clone(), json!("[redacted]"));
+                } else {
+                    next.insert(
+                        key.clone(),
+                        redact_and_summarize_config(child, redact_secrets, summarize),
+                    );
+                }
+            }
+            Value::Object(next)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|child| redact_and_summarize_config(child, redact_secrets, summarize))
+                .collect(),
+        ),
+        Value::String(s) if summarize => Value::String(truncate_string(s, 240)),
+        _ => value.clone(),
+    }
+}
+
+fn node_label(node: &Value) -> String {
+    node.get("data")
+        .and_then(|d| d.get("label"))
+        .and_then(|v| v.as_str())
+        .or_else(|| node.get("id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string()
+}
+
+fn api_studio_pipeline_map_json(
+    state: &State,
+    query: &HashMap<String, String>,
+) -> Result<Value, String> {
+    let workspace = studio_workspace_from_query(state, query);
+    let (pipeline_id, pipeline_name, file, pipeline) = resolve_studio_pipeline(&workspace, query)?;
+    let config_mode = query
+        .get("config")
+        .or_else(|| query.get("configMode"))
+        .map(|s| s.as_str())
+        .unwrap_or("full");
+    let include_config = config_mode != "none";
+    let summarize_config = config_mode == "summary";
+    let redact_secrets = query
+        .get("redactSecrets")
+        .map(|s| s != "false")
+        .unwrap_or(true);
+
+    let nodes = pipeline
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "pipeline has no nodes array".to_string())?;
+    let edges = pipeline
+        .get("edges")
+        .and_then(|v| v.as_array())
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    let mut labels_by_id = HashMap::new();
+    for node in nodes {
+        if let Some(id) = node.get("id").and_then(|v| v.as_str()) {
+            labels_by_id.insert(id.to_string(), node_label(node));
+        }
+    }
+
+    let mapped_nodes: Vec<Value> = nodes
+        .iter()
+        .map(|node| {
+            let id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let upstream: Vec<Value> = edges
+                .iter()
+                .filter(|edge| edge.get("target").and_then(|v| v.as_str()) == Some(id))
+                .filter_map(|edge| edge.get("source").and_then(|v| v.as_str()))
+                .map(|source| {
+                    json!({
+                        "id": source,
+                        "label": labels_by_id.get(source).cloned().unwrap_or_else(|| source.to_string()),
+                    })
+                })
+                .collect();
+            let downstream: Vec<Value> = edges
+                .iter()
+                .filter(|edge| edge.get("source").and_then(|v| v.as_str()) == Some(id))
+                .filter_map(|edge| edge.get("target").and_then(|v| v.as_str()))
+                .map(|target| {
+                    json!({
+                        "id": target,
+                        "label": labels_by_id.get(target).cloned().unwrap_or_else(|| target.to_string()),
+                    })
+                })
+                .collect();
+
+            let mut item = serde_json::Map::new();
+            item.insert("id".into(), json!(id));
+            item.insert("label".into(), json!(node_label(node)));
+            item.insert(
+                "kind".into(),
+                node.get("type").cloned().unwrap_or(Value::Null),
+            );
+            item.insert(
+                "componentId".into(),
+                node.get("data")
+                    .and_then(|d| d.get("componentId"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            if let Some(disabled) = node
+                .get("data")
+                .and_then(|d| d.get("disabled"))
+                .and_then(|v| v.as_bool())
+            {
+                item.insert("disabled".into(), json!(disabled));
+            }
+            item.insert("upstream".into(), Value::Array(upstream));
+            item.insert("downstream".into(), Value::Array(downstream));
+            if include_config {
+                let config = node
+                    .get("data")
+                    .and_then(|d| d.get("properties"))
+                    .map(|props| redact_and_summarize_config(props, redact_secrets, summarize_config))
+                    .unwrap_or_else(|| json!({}));
+                item.insert("config".into(), config);
+            }
+            Value::Object(item)
+        })
+        .collect();
+
+    let mapped_edges: Vec<Value> = edges
+        .iter()
+        .map(|edge| {
+            let source = edge.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let target = edge.get("target").and_then(|v| v.as_str()).unwrap_or("");
+            json!({
+                "id": edge.get("id").cloned().unwrap_or(Value::Null),
+                "from": {
+                    "id": source,
+                    "label": labels_by_id.get(source).cloned().unwrap_or_else(|| source.to_string()),
+                },
+                "to": {
+                    "id": target,
+                    "label": labels_by_id.get(target).cloned().unwrap_or_else(|| target.to_string()),
+                },
+                "sourceHandle": edge.get("sourceHandle").cloned().unwrap_or(Value::Null),
+                "targetHandle": edge.get("targetHandle").cloned().unwrap_or(Value::Null),
+                "condition": edge.get("data").and_then(|d| d.get("condition")).cloned().unwrap_or(Value::Null),
+                "label": edge.get("data").and_then(|d| d.get("label")).cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "pipeline": {
+            "id": pipeline_id,
+            "name": pipeline_name,
+            "file": file.strip_prefix(&workspace).unwrap_or(&file).to_string_lossy().replace('\\', "/"),
+            "nodeCount": nodes.len(),
+            "edgeCount": edges.len(),
+        },
+        "nodes": mapped_nodes,
+        "edges": mapped_edges,
+        "options": {
+            "config": config_mode,
+            "redactSecrets": redact_secrets,
+        },
+    }))
+}
+
+fn render_pipeline_map_markdown(map: &Value) -> String {
+    let pipeline = &map["pipeline"];
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# {}\n\n",
+        pipeline
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pipeline")
+    ));
+    out.push_str(&format!(
+        "- id: `{}`\n- file: `{}`\n- nodes: {}\n- edges: {}\n\n",
+        pipeline.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+        pipeline.get("file").and_then(|v| v.as_str()).unwrap_or(""),
+        pipeline
+            .get("nodeCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        pipeline
+            .get("edgeCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    ));
+
+    out.push_str("## Nodes\n\n");
+    if let Some(nodes) = map.get("nodes").and_then(|v| v.as_array()) {
+        for (idx, node) in nodes.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. `{}` ({})\n",
+                idx + 1,
+                node.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+                node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+            ));
+            out.push_str(&format!(
+                "   - component: `{}`\n   - kind: `{}`\n",
+                node.get("componentId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+                node.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
+            ));
+            let upstream = node
+                .get("upstream")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("label").and_then(|v| v.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            let downstream = node
+                .get("downstream")
+                .and_then(|v| v.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("label").and_then(|v| v.as_str()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "   - upstream: {}\n   - downstream: {}\n",
+                if upstream.is_empty() { "-" } else { &upstream },
+                if downstream.is_empty() {
+                    "-"
+                } else {
+                    &downstream
+                },
+            ));
+            if let Some(config) = node.get("config") {
+                let pretty =
+                    serde_json::to_string_pretty(config).unwrap_or_else(|_| "{}".to_string());
+                out.push_str("   - config:\n\n");
+                out.push_str("```json\n");
+                out.push_str(&pretty);
+                out.push_str("\n```\n\n");
+            } else {
+                out.push('\n');
+            }
+        }
+    }
+
+    out.push_str("## Edges\n\n");
+    if let Some(edges) = map.get("edges").and_then(|v| v.as_array()) {
+        for edge in edges {
+            out.push_str(&format!(
+                "- `{}` -> `{}`\n",
+                edge.get("from")
+                    .and_then(|v| v.get("label"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+                edge.get("to")
+                    .and_then(|v| v.get("label"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+            ));
+        }
+    }
+    out
+}
+
 fn api_studio_history(state: &State, query: &HashMap<String, String>) -> Result<Value, String> {
     let workspace = studio_workspace_from_query(state, query);
     let pipeline_id = studio_pipeline_id_from_query(query)?;
@@ -604,7 +969,10 @@ fn api_studio_logs(state: &State, query: &HashMap<String, String>) -> Result<Val
     }))
 }
 
-fn api_studio_workspace_get(state: &State, query: &HashMap<String, String>) -> Result<Value, String> {
+fn api_studio_workspace_get(
+    state: &State,
+    query: &HashMap<String, String>,
+) -> Result<Value, String> {
     let workspace = studio_workspace_from_query(state, query);
     load_studio_workspace(&workspace)
 }
@@ -623,8 +991,8 @@ fn api_studio_workspace_save(state: &State, body: &[u8]) -> Result<Value, String
 }
 
 fn read_json_file(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))?;
     serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))
 }
 
@@ -705,8 +1073,7 @@ fn save_studio_workspace(workspace: &Path, state: &Value) -> Result<(), String> 
         .map_err(|e| format!("create {}: {}", workspace.display(), e))?;
     for dir in ["pipelines", "connections", "contexts", "routines", "docs"] {
         let path = workspace.join(dir);
-        std::fs::create_dir_all(&path)
-            .map_err(|e| format!("create {}: {}", path.display(), e))?;
+        std::fs::create_dir_all(&path).map_err(|e| format!("create {}: {}", path.display(), e))?;
     }
 
     let meta = json!({
@@ -802,6 +1169,28 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
             Ok(v) => respond_json(&mut stream, &v),
             Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
         },
+        ("GET", "/api/studio/pipeline-map") => {
+            match api_studio_pipeline_map_json(state, &req.query) {
+                Ok(v) => {
+                    if req
+                        .query
+                        .get("format")
+                        .is_some_and(|format| format == "markdown" || format == "md")
+                    {
+                        let body = render_pipeline_map_markdown(&v);
+                        respond(
+                            &mut stream,
+                            "200 OK",
+                            "text/markdown; charset=utf-8",
+                            body.as_bytes(),
+                        )
+                    } else {
+                        respond_json(&mut stream, &v)
+                    }
+                }
+                Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+            }
+        }
         ("GET", "/api/studio/logs") => match api_studio_logs(state, &req.query) {
             Ok(v) => respond_json(&mut stream, &v),
             Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
@@ -1944,6 +2333,148 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0]["status"], "ok");
         assert_eq!(records[0]["trigger"], "manual");
+    }
+
+    fn write_studio_pipeline_workspace(workspace: &Path) {
+        std::fs::create_dir_all(workspace.join("pipelines")).unwrap();
+        std::fs::write(
+            workspace.join("repository.json"),
+            r#"[
+                {"id":"root","name":"Duckle Project","type":"project"},
+                {"id":"pipelines","name":"Pipelines","type":"folder","parentId":"root"},
+                {"id":"pipe1","name":"daily_sync","type":"pipeline","parentId":"pipelines"}
+            ]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("pipelines").join("pipe1.json"),
+            r#"{
+                "nodes": [
+                    {
+                        "id": "source1",
+                        "type": "source",
+                        "position": { "x": 0, "y": 0 },
+                        "data": {
+                            "label": "Source",
+                            "componentId": "code.sql",
+                            "properties": {
+                                "sql": "select 1 as id",
+                                "password": "secret-value"
+                            },
+                            "schema": [{ "name": "id", "type": "int32", "nullable": false }],
+                            "sampleRows": [{ "id": 1 }]
+                        }
+                    },
+                    {
+                        "id": "sink1",
+                        "type": "sink",
+                        "position": { "x": 200, "y": 0 },
+                        "data": {
+                            "label": "Sink",
+                            "componentId": "snk.parquet",
+                            "properties": { "path": "out/data.parquet" }
+                        }
+                    }
+                ],
+                "edges": [
+                    {
+                        "id": "e1",
+                        "source": "source1",
+                        "target": "sink1",
+                        "sourceHandle": "out",
+                        "targetHandle": "in"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn studio_pipeline_map_returns_lightweight_json_by_id() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        write_studio_pipeline_workspace(&workspace);
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(
+            make_state(workspace, duckdb),
+            "/api/studio/pipeline-map?pipelineId=pipe1",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["pipeline"]["id"], "pipe1");
+        assert_eq!(response.body["pipeline"]["name"], "daily_sync");
+        assert_eq!(response.body["pipeline"]["nodeCount"], 2);
+        assert_eq!(response.body["nodes"][0]["label"], "Source");
+        assert_eq!(response.body["nodes"][0]["componentId"], "code.sql");
+        assert_eq!(response.body["nodes"][0]["config"]["sql"], "select 1 as id");
+        assert_eq!(
+            response.body["nodes"][0]["config"]["password"],
+            "[redacted]"
+        );
+        assert_eq!(response.body["nodes"][0].get("position"), None);
+        assert_eq!(response.body["nodes"][0].get("schema"), None);
+        assert_eq!(response.body["nodes"][0].get("sampleRows"), None);
+        assert_eq!(response.body["nodes"][0]["downstream"][0]["id"], "sink1");
+        assert_eq!(response.body["edges"][0]["from"]["label"], "Source");
+        assert_eq!(response.body["edges"][0]["to"]["label"], "Sink");
+    }
+
+    #[test]
+    fn studio_pipeline_map_returns_markdown_by_name() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        write_studio_pipeline_workspace(&workspace);
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(
+            make_state(workspace, duckdb),
+            "/api/studio/pipeline-map?pipelineName=daily_sync&format=markdown&config=summary",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 200 OK"),
+            "{}",
+            response.status
+        );
+        assert!(
+            response
+                .headers
+                .contains("Content-Type: text/markdown; charset=utf-8"),
+            "{}",
+            response.headers
+        );
+        assert!(response.raw_body.contains("# daily_sync"));
+        assert!(response.raw_body.contains("`Source` -> `Sink`"));
+        assert!(response.raw_body.contains("\"password\": \"[redacted]\""));
+    }
+
+    #[test]
+    fn studio_pipeline_map_rejects_path_like_pipeline_id() {
+        let tmp = TempRoot::new();
+        let workspace = tmp.path.join("workspace");
+        write_studio_pipeline_workspace(&workspace);
+        let duckdb = tmp.path.join("duckdb");
+        std::fs::write(&duckdb, "").unwrap();
+
+        let response = request(
+            make_state(workspace, duckdb),
+            "/api/studio/pipeline-map?pipelineId=../outside",
+        );
+
+        assert!(
+            response.status.starts_with("HTTP/1.1 400 Bad Request"),
+            "{}",
+            response.status
+        );
+        assert_eq!(response.body["error"], "invalid pipelineId");
     }
 
     #[test]

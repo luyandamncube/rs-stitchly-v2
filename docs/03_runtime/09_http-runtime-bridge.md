@@ -61,6 +61,7 @@ The bridge should add browser-studio endpoints while reusing the same engine and
 | `POST /api/studio/compile` | Return generated stage SQL for the Plan view. | High |
 | `POST /api/studio/autodetect` | Infer schema/sample rows for source configuration. | Medium |
 | `GET /api/studio/history` | Return run history for a workspace/pipeline id. | Medium |
+| `GET /api/studio/pipeline-map` | Return a lightweight, coordinate-free pipeline map for agent/debugging context. | Medium |
 | `POST /api/studio/cancel` | Cancel the active interactive run. | Medium |
 
 Initial implementation can return final run results only. Streaming live node events can be added later.
@@ -555,6 +556,48 @@ Exit criteria:
 
 - Browser mode can show previous runs.
 - Browser mode can show runtime logs for a selected pipeline.
+
+### Pipeline Map Endpoint
+
+Goal: expose a lightweight context view of a saved workspace pipeline through curl.
+
+Endpoint:
+
+```text
+GET /api/studio/pipeline-map
+```
+
+Lookup by id:
+
+```bash
+curl --get http://127.0.0.1:8080/api/studio/pipeline-map \
+  --data-urlencode "workspacePath=/home/mncubel/rs-stitchly-v2/stitchly_workspace" \
+  --data-urlencode "pipelineId=p_dolt_rates_sync"
+```
+
+Lookup by repository name and render as Markdown:
+
+```bash
+curl --get http://127.0.0.1:8080/api/studio/pipeline-map \
+  --data-urlencode "workspacePath=/home/mncubel/rs-stitchly-v2/stitchly_workspace" \
+  --data-urlencode "pipelineName=dolt_rates_sync" \
+  --data-urlencode "format=markdown" \
+  --data-urlencode "config=summary"
+```
+
+Options:
+
+| Query | Values | Default | Notes |
+|---|---|---:|---|
+| `pipelineId` / `id` | workspace pipeline id | required unless `pipelineName` is set | Reads `pipelines/<id>.json`. |
+| `pipelineName` / `name` | repository pipeline name | required unless `pipelineId` is set | Resolved from `repository.json`. |
+| `format` | `json`, `markdown`, `md` | `json` | Markdown returns `text/markdown`. |
+| `config` | `full`, `summary`, `none` | `full` | `full` returns exact `data.properties`; `summary` truncates long strings; `none` omits configs. |
+| `redactSecrets` | `true`, `false` | `true` | Secret-like property keys are redacted by default. |
+
+The response omits canvas-only fields such as node coordinates, measured sizes,
+schemas, and preview sample rows. It includes node id, label, kind, component id,
+config, upstream/downstream links, and simplified edge labels.
 
 ### Phase 8: Cancel
 
