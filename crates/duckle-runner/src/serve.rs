@@ -604,6 +604,134 @@ fn api_studio_logs(state: &State, query: &HashMap<String, String>) -> Result<Val
     }))
 }
 
+fn api_studio_workspace_get(state: &State, query: &HashMap<String, String>) -> Result<Value, String> {
+    let workspace = studio_workspace_from_query(state, query);
+    load_studio_workspace(&workspace)
+}
+
+fn api_studio_workspace_save(state: &State, body: &[u8]) -> Result<Value, String> {
+    let value: Value = serde_json::from_slice(body).map_err(|e| format!("invalid json: {}", e))?;
+    let workspace = value
+        .get("workspacePath")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.workspace.clone());
+    let workspace_state = value.get("state").unwrap_or(&value);
+    save_studio_workspace(&workspace, workspace_state)?;
+    Ok(json!({ "ok": true }))
+}
+
+fn read_json_file(path: &Path) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {}", path.display(), e))?;
+    serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))
+}
+
+fn load_studio_workspace(workspace: &Path) -> Result<Value, String> {
+    let meta_path = workspace.join("duckle.json");
+    if !meta_path.exists() {
+        return Ok(Value::Null);
+    }
+    let meta = read_json_file(&meta_path)?;
+    let repo_path = workspace.join("repository.json");
+    let repo = if repo_path.exists() {
+        read_json_file(&repo_path)?
+    } else {
+        json!([])
+    };
+
+    let mut pipeline_data = serde_json::Map::new();
+    if let Some(items) = repo.as_array() {
+        for item in items {
+            let is_pipeline = item
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| t == "pipeline");
+            let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !is_pipeline {
+                continue;
+            }
+            let file = workspace.join("pipelines").join(format!("{}.json", id));
+            if file.exists() {
+                pipeline_data.insert(id.to_string(), read_json_file(&file)?);
+            }
+        }
+    }
+
+    Ok(json!({
+        "version": meta.get("version").and_then(|v| v.as_u64()).unwrap_or(2),
+        "engine": meta.get("engine").cloned().unwrap_or(Value::Null),
+        "jobs": meta.get("jobs").cloned().unwrap_or_else(|| json!([])),
+        "activeJobId": meta.get("activeJobId").cloned().unwrap_or(Value::Null),
+        "repo": repo,
+        "pipelineData": Value::Object(pipeline_data),
+    }))
+}
+
+fn strip_payloads(value: &Value) -> Value {
+    let Some(items) = value.as_array() else {
+        return json!([]);
+    };
+    Value::Array(
+        items
+            .iter()
+            .map(|item| {
+                let Some(obj) = item.as_object() else {
+                    return item.clone();
+                };
+                let mut next = obj.clone();
+                next.remove("payload");
+                Value::Object(next)
+            })
+            .collect(),
+    )
+}
+
+fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create {}: {}", parent.display(), e))?;
+    }
+    let text = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("serialize {}: {}", path.display(), e))?;
+    std::fs::write(path, text).map_err(|e| format!("write {}: {}", path.display(), e))
+}
+
+fn save_studio_workspace(workspace: &Path, state: &Value) -> Result<(), String> {
+    std::fs::create_dir_all(workspace)
+        .map_err(|e| format!("create {}: {}", workspace.display(), e))?;
+    for dir in ["pipelines", "connections", "contexts", "routines", "docs"] {
+        let path = workspace.join(dir);
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("create {}: {}", path.display(), e))?;
+    }
+
+    let meta = json!({
+        "version": state.get("version").and_then(|v| v.as_u64()).unwrap_or(2),
+        "engine": state.get("engine").cloned().unwrap_or(Value::Null),
+        "jobs": state.get("jobs").cloned().unwrap_or_else(|| json!([])),
+        "activeJobId": state.get("activeJobId").cloned().unwrap_or(Value::Null),
+    });
+    write_json_file(&workspace.join("duckle.json"), &meta)?;
+
+    let repo = strip_payloads(state.get("repo").unwrap_or(&Value::Null));
+    write_json_file(&workspace.join("repository.json"), &repo)?;
+
+    if let Some(pipelines) = state.get("pipelineData").and_then(|v| v.as_object()) {
+        for (id, pipeline) in pipelines {
+            write_json_file(
+                &workspace.join("pipelines").join(format!("{}.json", id)),
+                pipeline,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 fn api_studio_cancel(state: &State) -> Result<Value, String> {
     let cancelled = match state
         .current_run
@@ -634,6 +762,14 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<(), String> {
         ("GET", "/api/summary") => respond_json(&mut stream, &api_summary(state)),
         ("GET", "/api/pipelines") => respond_json(&mut stream, &api_pipelines(state)),
         ("GET", "/api/studio/health") => respond_json(&mut stream, &api_studio_health(state)),
+        ("GET", "/api/studio/workspace") => match api_studio_workspace_get(state, &req.query) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
+        ("POST", "/api/studio/workspace") => match api_studio_workspace_save(state, &req.body) {
+            Ok(v) => respond_json(&mut stream, &v),
+            Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
+        },
         ("POST", "/api/studio/compile") => match api_studio_compile(&req.body) {
             Ok(v) => respond_json(&mut stream, &v),
             Err(e) => respond_err(&mut stream, "400 Bad Request", &e),
