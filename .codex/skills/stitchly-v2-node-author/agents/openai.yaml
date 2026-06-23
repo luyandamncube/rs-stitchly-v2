@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitchly v2 Node Author"
+  short_description: "Build and extend Stitchly v2 nodes"
+  default_prompt: "Use $stitchly-v2-node-author to add or modify a Stitchly v2 node."

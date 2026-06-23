@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitchly Workspace Sync"
+  short_description: "Move and sync workspace folders."
+  default_prompt: "Use -v2-workspace-sync to move my Stitchly workspace into the repo and configure startup commands."

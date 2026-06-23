@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitchly v2 Runtime"
+  short_description: "Run and debug Stitchly v2 modes"
+  default_prompt: "Use $stitchly-v2-runtime to start or debug the Stitchly v2 local runtime."

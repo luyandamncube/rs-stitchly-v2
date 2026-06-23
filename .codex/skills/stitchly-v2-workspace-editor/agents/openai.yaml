@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitchly Workspace Editor"
+  short_description: "Inspect and edit workspace JSON files."
+  default_prompt: "Use -v2-workspace-editor to list pipelines in my Stitchly workspace and summarize their JSON."

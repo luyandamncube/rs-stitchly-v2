@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitchly Dolt Pipelines"
+  short_description: "Build idempotent Dolt Parquet workflows."
+  default_prompt: "Use -v2-dolt-pipelines to debug my Dolt-to-Parquet sync workflow."

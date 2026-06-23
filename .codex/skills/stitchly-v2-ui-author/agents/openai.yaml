@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitchly UI Author"
+  short_description: "Implement Stitchly React UI changes."
+  default_prompt: "Use -v2-ui-author to update a Stitchly v2 UI component and verify the frontend."

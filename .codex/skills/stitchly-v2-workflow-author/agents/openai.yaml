@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stitchly v2 Workflow Author"
+  short_description: "Design Stitchly v2 workflow graphs"
+  default_prompt: "Use $stitchly-v2-workflow-author to design a Stitchly v2 workflow graph."
