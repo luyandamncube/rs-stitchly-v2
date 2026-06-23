@@ -117,6 +117,9 @@ export default function EditorTabs({
                         runResult={runResult}
                         isRunning={isRunning}
                         nodeLabels={nodeLabels}
+                        workspacePath={workspacePath}
+                        pipelineId={pipelineId}
+                        runResultKey={runResult?.duration_ms ?? 0}
                     />
                 </div>
                 <div className={'tab-panel' + (active === 'history' ? ' tab-panel-active' : '')}>
