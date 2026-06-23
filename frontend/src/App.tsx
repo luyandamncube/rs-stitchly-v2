@@ -64,6 +64,7 @@ import {
     newAccountId,
 } from './accounts';
 import {
+    canUseFileWorkspace,
     deleteItemPayload,
     deletePipelineFile,
     getWorkspacePath,
@@ -73,6 +74,7 @@ import {
     saveMetadata,
     savePipelineFile,
     saveRepository,
+    saveWorkspace,
     setWorkspacePath,
     WorkspaceLoadError,
 } from './workspace';
@@ -272,7 +274,7 @@ export default function App() {
     });
     // In Tauri: needs workspace picked + hydrated before saves start.
     // In browser: workspaceReady is always true; localStorage persists.
-    const [workspaceReady, setWorkspaceReady] = useState<boolean>(!isInTauri());
+    const [workspaceReady, setWorkspaceReady] = useState<boolean>(() => !canUseFileWorkspace());
     // A structural workspace file (duckle.json / repository.json) failed to
     // parse - we stay un-ready so auto-save can't overwrite the good files,
     // and show a banner naming the file. `corruptFiles` holds per-item files
@@ -306,9 +308,11 @@ export default function App() {
     const nodes = activePipeline.nodes;
     const edges = activePipeline.edges;
 
-    // Hydrate from workspace file on Tauri once the path is known.
+    // Hydrate from workspace files once the path is known. Tauri reads directly
+    // through fs plugins; browser+HTTP asks the local runner bridge to read the
+    // same workspace layout.
     useEffect(() => {
-        if (!isInTauri() || !workspacePathState) return;
+        if (!canUseFileWorkspace() || !workspacePathState) return;
         let cancelled = false;
         setWorkspaceLoadError(null);
         setCorruptFiles([]);
@@ -343,7 +347,7 @@ export default function App() {
     }, [workspacePathState]);
 
     // Granular Tauri saves - each slice goes to its own file so the
-    // workspace folder is git-friendly. Browser still uses localStorage.
+    // workspace folder is git-friendly. Browser+HTTP uses saveWorkspace below.
     const prevPipelineDataRef = useRef<Record<string, PipelineState> | null>(null);
     const prevRepoRef = useRef<RepoItem[] | null>(null);
 
@@ -438,11 +442,22 @@ export default function App() {
         return () => clearTimeout(t);
     }, [workspaceReady, workspacePathState, pipelineData]);
 
-    // Browser fallback: localStorage (unchanged).
+    // Browser+HTTP file workspace save, or browser fallback localStorage.
     useEffect(() => {
         if (!workspaceReady) return;
-        if (isInTauri() && workspacePathState) return;
         const t = setTimeout(() => {
+            if (!isInTauri() && canUseFileWorkspace() && workspacePathState) {
+                void saveWorkspace(workspacePathState, {
+                    version: 2,
+                    engine,
+                    jobs,
+                    activeJobId,
+                    repo,
+                    pipelineData,
+                });
+                return;
+            }
+            if (isInTauri() && workspacePathState) return;
             savePersisted('pipelines', pipelineData);
             savePersisted('repo', repo);
             savePersisted('jobs', jobs);
@@ -535,9 +550,13 @@ export default function App() {
     }, []);
 
     const handleSwitchWorkspace = useCallback(async () => {
-        if (!isInTauri()) return;
-        const { pickWorkspaceDirectory } = await import('./workspace');
-        const picked = await pickWorkspaceDirectory();
+        let picked: string | null = null;
+        if (isInTauri()) {
+            const { pickWorkspaceDirectory } = await import('./workspace');
+            picked = await pickWorkspaceDirectory();
+        } else {
+            picked = window.prompt('Workspace path', workspacePathState ?? '')?.trim() ?? null;
+        }
         if (!picked || picked === workspacePathState) return;
         // Reset state so loadWorkspace effect re-hydrates from the new
         // folder. We don't clear the existing state until we know the

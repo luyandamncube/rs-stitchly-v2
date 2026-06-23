@@ -55,6 +55,41 @@ export function isInTauri(): boolean {
     return isTauri();
 }
 
+function isHttpBackend(): boolean {
+    return String(import.meta.env.VITE_DUCKLE_BACKEND ?? '').toLowerCase() === 'http';
+}
+
+function httpBaseUrl(): string {
+    return String(import.meta.env.VITE_DUCKLE_HTTP_URL ?? 'http://127.0.0.1:8080').replace(
+        /\/+$/,
+        '',
+    );
+}
+
+async function httpJson<T>(path: string, init?: RequestInit): Promise<T> {
+    const res = await fetch(`${httpBaseUrl()}${path}`, {
+        ...init,
+        headers: {
+            'content-type': 'application/json',
+            ...(init?.headers ?? {}),
+        },
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : null;
+    if (!res.ok) {
+        const message =
+            data && typeof data === 'object' && 'error' in data
+                ? String((data as { error: unknown }).error)
+                : `${res.status} ${res.statusText}`;
+        throw new Error(message);
+    }
+    return data as T;
+}
+
+export function canUseFileWorkspace(): boolean {
+    return isTauri() || isHttpBackend();
+}
+
 export function getWorkspacePath(): string | null {
     try {
         return localStorage.getItem(WORKSPACE_PATH_KEY);
@@ -187,6 +222,10 @@ async function readDirEntries(path: string): Promise<string[]> {
  * we're running in browser mode.
  */
 export async function loadWorkspace(path: string): Promise<WorkspaceState | null> {
+    if (!isTauri() && isHttpBackend()) {
+        const qs = new URLSearchParams({ workspacePath: path });
+        return await httpJson<WorkspaceState | null>(`/api/studio/workspace?${qs.toString()}`);
+    }
     if (!isTauri()) return null;
     try {
         const v2 = await loadV2(path);
@@ -420,6 +459,13 @@ export async function deleteItemPayload(
  * migration and as a fallback.
  */
 export async function saveAll(path: string, state: WorkspaceState): Promise<void> {
+    if (!isTauri() && isHttpBackend()) {
+        await httpJson<{ ok: boolean }>('/api/studio/workspace', {
+            method: 'POST',
+            body: JSON.stringify({ workspacePath: path, state }),
+        });
+        return;
+    }
     if (!isTauri()) return;
     await ensureDir(path);
     await saveMetadata(path, {
