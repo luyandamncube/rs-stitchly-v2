@@ -1,0 +1,1329 @@
+{
+  "nodes": [
+    {
+      "id": "repo_config",
+      "type": "source",
+      "position": {
+        "x": 0,
+        "y": 180
+      },
+      "data": {
+        "label": "Repo Config",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": "  select\n    'rates' as repo_key,\n    'post-no-preference/rates' as remote_url,\n    'master' as branch,\n    '.stitchly/cache/dolt' as cache_root,\n    '.stitchly/state/dolt_sync.duckdb' as state_db,\n    'artifacts/dolt' as artifact_root,\n    false as force_snapshot;",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "repo_key",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "remote_url",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "branch",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "cache_root",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "state_db",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "artifact_root",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "force_snapshot",
+            "type": "bool",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "repo_key": "rates",
+            "remote_url": "post-no-preference/rates",
+            "branch": "master",
+            "cache_root": ".stitchly/cache/dolt",
+            "state_db": ".stitchly/state/dolt_sync.duckdb",
+            "artifact_root": "artifacts/dolt",
+            "force_snapshot": false
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "sync_repo",
+      "type": "transform",
+      "position": {
+        "x": 300,
+        "y": 180
+      },
+      "data": {
+        "label": "Sync Repo",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\n  workspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\n  duckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\n  csv_value() {\n    tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n  }\n\n  sql_escape() {\n    sed \"s/'/''/g\"\n  }\n\n  json_escape() {\n    sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'\n  }\n\n  config_value() {\n    _out=\"$(\"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \\\n      \"select $1 from \\\"$DUCKLE_INPUT_TABLE\\\" limit 1\")\"\n    printf '%s\\n' \"$_out\" | csv_value\n  }\n\n  repo_key=\"$(config_value repo_key)\"\n  remote_url=\"$(config_value remote_url)\"\n  branch=\"$(config_value branch)\"\n  cache_root=\"$(config_value cache_root)\"\n  state_db=\"$(config_value state_db)\"\n\n  cd \"$workspace\"\n\n  repo_dir=\"${cache_root}/${repo_key}/repo\"\n  mkdir -p \"$(dirname \"$repo_dir\")\" \"$(dirname \"$state_db\")\"\n\n  if [ ! -d \"$repo_dir/.dolt\" ]; then\n    dolt clone \"$remote_url\" \"$repo_dir\" >&2\n  fi\n\n  cd \"$repo_dir\"\n\n  if ! dolt config --local --get user.name >/dev/null 2>&1; then\n    dolt config --local --add user.name \"Stitchly Sync\"\n  fi\n\n  if ! dolt config --local --get user.email >/dev/null 2>&1; then\n    dolt config --local --add user.email \"stitchly-sync@example.local\"\n  fi\n\n  dolt checkout \"$branch\" >&2\n  dolt pull >&2\n\n  head_csv=\"$(dolt sql -r csv -q \"select commit_hash from dolt_log order by commit_order desc limit 1\")\"\n  head_commit=\"$(printf '%s\\n' \"$head_csv\" | csv_value)\"\n\n  if [ -z \"$head_commit\" ]; then\n    echo \"sync_repo: could not resolve head commit\" >&2\n    exit 1\n  fi\n\n  cd \"$workspace\"\n\n  \"$duckdb_bin\" \"$state_db\" -c \"\n  create table if not exists dolt_sync (\n    repo_key text,\n    remote_url text,\n    branch text,\n    table_name text,\n    last_processed_commit text,\n    last_snapshot_commit text,\n    schema_hash text,\n    artifact_manifest_path text,\n    row_count bigint,\n    updated_at timestamp\n  );\n  \" >&2\n\n  repo_key_sql=\"$(printf '%s' \"$repo_key\" | sql_escape)\"\n  branch_sql=\"$(printf '%s' \"$branch\" | sql_escape)\"\n\n  previous_csv=\"$(\"$duckdb_bin\" -csv \"$state_db\" -c \"\n  select coalesce((\n    select last_processed_commit\n    from dolt_sync\n    where repo_key = '${repo_key_sql}'\n      and branch = '${branch_sql}'\n    order by updated_at desc\n    limit 1\n  ), '');\n  \")\"\n\n  \n  previous_commit=\"$(\"$duckdb_bin\" \"$state_db\" -csv -c \"\n  select coalesce(max(last_processed_commit), '')\n  from dolt_sync\n  where repo_key = '${repo_key}'\n    and branch = '${branch}';\n  \" | tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//')\"\n  \n  should_skip=\"false\"\n  if [ -n \"$previous_commit\" ] && [ \"$previous_commit\" = \"$head_commit\" ]; then\n    should_skip=\"true\"\n  fi\n\n  repo_key_json=\"$(printf '%s' \"$repo_key\" | json_escape)\"\n  remote_url_json=\"$(printf '%s' \"$remote_url\" | json_escape)\"\n  branch_json=\"$(printf '%s' \"$branch\" | json_escape)\"\n  repo_dir_json=\"$(printf '%s' \"$repo_dir\" | json_escape)\"\n  previous_commit_json=\"$(printf '%s' \"$previous_commit\" | json_escape)\"\n  head_commit_json=\"$(printf '%s' \"$head_commit\" | json_escape)\"\n\n  printf '{\"repo_key\":\"%s\",\"remote_url\":\"%s\",\"branch\":\"%s\",\"repo_path\":\"%s\",\"previous_commit\":\"%s\",\"head_commit\":\"%s\",\"should_skip\":%s}\\n' \\\n    \"$repo_key_json\" \\\n    \"$remote_url_json\" \\\n    \"$branch_json\" \\\n    \"$repo_dir_json\" \\\n    \"$previous_commit_json\" \\\n    \"$head_commit_json\" \\\n    \"$should_skip\"",
+          "timeoutMs": 1800000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "{\"repo_key\":\"rates\",\"remote_url\":\"post-no-preference/rates\",\"branch\":\"master\",\"repo_path\":\".stitchly/cache/dolt/rates/repo\",\"previous_commit\":\"podvlb6urshufjedjuvfmol0r8428cl7\",\"head_commit\":\"podvlb6urshufjedjuvfmol0r8428cl7\",\"should_skip\":true}\n",
+            "stderr": "Already on branch 'master'\n- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\nEverything up-to-date\n\b\b\b\b\b\b\b\b\b\b\b\b            \b\b\b\b\b\b\b\b\b\b\b\b",
+            "exit_code": 0,
+            "duration_ms": 9989,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-sync_repo-input-411177-293608733-ThreadId200.json",
+            "input_format": "jsonl",
+            "input_table": "repo_config",
+            "input_row_count": 1
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "parse_sync_result",
+      "type": "transform",
+      "position": {
+        "x": 600,
+        "y": 180
+      },
+      "data": {
+        "label": "Parse Sync Result",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", raw as (\n    select\n      trim(coalesce(stdout, '')) as stdout_json,\n      coalesce(stderr, '') as stderr_text,\n      try_cast(exit_code as integer) as shell_exit_code,\n      try_cast(duration_ms as bigint) as shell_duration_ms\n    from input\n  ),\n  parsed as (\n    select\n      *,\n      try_cast(nullif(stdout_json, '') as json) as payload\n    from raw\n  ),\n  fields as (\n    select\n      json_extract_string(payload, '$.repo_key') as repo_key,\n      json_extract_string(payload, '$.remote_url') as remote_url,\n      json_extract_string(payload, '$.branch') as branch,\n      json_extract_string(payload, '$.repo_path') as repo_path,\n      coalesce(json_extract_string(payload, '$.previous_commit'), '') as previous_commit,\n      coalesce(json_extract_string(payload, '$.head_commit'), '') as head_commit,\n      coalesce(\n        try_cast(json_extract_string(payload, '$.should_skip') as boolean),\n        false\n      ) as should_skip,\n      shell_exit_code,\n      shell_duration_ms,\n      stdout_json as raw_stdout,\n      stderr_text as raw_stderr,\n      payload is not null as parsed_ok\n    from parsed\n  )\n  select\n    *,\n    coalesce(shell_exit_code, -1) = 0 and parsed_ok as sync_ok,\n    case\n      when coalesce(shell_exit_code, -1) <> 0 then 'shell_failed'\n      when not parsed_ok then 'parse_failed'\n      when should_skip then 'unchanged'\n      else 'changed'\n    end as sync_status\n  from fields",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "repo_key",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "remote_url",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "branch",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "repo_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "previous_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "head_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "should_skip",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "sync_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "sync_status",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "repo_key": "rates",
+            "remote_url": "post-no-preference/rates",
+            "branch": "master",
+            "repo_path": ".stitchly/cache/dolt/rates/repo",
+            "previous_commit": "podvlb6urshufjedjuvfmol0r8428cl7",
+            "head_commit": "podvlb6urshufjedjuvfmol0r8428cl7",
+            "should_skip": true,
+            "shell_exit_code": 0,
+            "shell_duration_ms": 9989,
+            "raw_stdout": "{\"repo_key\":\"rates\",\"remote_url\":\"post-no-preference/rates\",\"branch\":\"master\",\"repo_path\":\".stitchly/cache/dolt/rates/repo\",\"previous_commit\":\"podvlb6urshufjedjuvfmol0r8428cl7\",\"head_commit\":\"podvlb6urshufjedjuvfmol0r8428cl7\",\"should_skip\":true}\n",
+            "raw_stderr": "Already on branch 'master'\n- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\nEverything up-to-date\n\b\b\b\b\b\b\b\b\b\b\b\b            \b\b\b\b\b\b\b\b\b\b\b\b",
+            "parsed_ok": true,
+            "sync_ok": true,
+            "sync_status": "unchanged"
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "assert_sync_ok",
+      "type": "transform",
+      "position": {
+        "x": 900,
+        "y": 180
+      },
+      "data": {
+        "label": "Assert Sync OK",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", checked as (\n    select\n      case\n        when coalesce(sync_ok, false) = false then\n          error('Dolt sync failed or produced invalid metadata')\n        else 0\n      end as _sync_assert,\n      *\n    from input\n  )\n  select * exclude (_sync_assert)\n  from checked\n",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "repo_key",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "remote_url",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "branch",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "repo_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "previous_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "head_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "should_skip",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "sync_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "sync_status",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "repo_key": "rates",
+            "remote_url": "post-no-preference/rates",
+            "branch": "master",
+            "repo_path": ".stitchly/cache/dolt/rates/repo",
+            "previous_commit": "podvlb6urshufjedjuvfmol0r8428cl7",
+            "head_commit": "podvlb6urshufjedjuvfmol0r8428cl7",
+            "should_skip": true,
+            "shell_exit_code": 0,
+            "shell_duration_ms": 9989,
+            "raw_stdout": "{\"repo_key\":\"rates\",\"remote_url\":\"post-no-preference/rates\",\"branch\":\"master\",\"repo_path\":\".stitchly/cache/dolt/rates/repo\",\"previous_commit\":\"podvlb6urshufjedjuvfmol0r8428cl7\",\"head_commit\":\"podvlb6urshufjedjuvfmol0r8428cl7\",\"should_skip\":true}\n",
+            "raw_stderr": "Already on branch 'master'\n- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b| Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b/ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b- Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\b\b\b\b\b\b\b\b\b\b\b\b\\ Pulling...\nEverything up-to-date\n\b\b\b\b\b\b\b\b\b\b\b\b            \b\b\b\b\b\b\b\b\b\b\b\b",
+            "parsed_ok": true,
+            "sync_ok": true,
+            "sync_status": "unchanged"
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "export_gate",
+      "type": "transform",
+      "position": {
+        "x": 1200,
+        "y": 180
+      },
+      "data": {
+        "label": "Export Gate",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": "select *\nfrom input\nwhere coalesce(sync_ok, false) = true\n  and coalesce(should_skip, false) = false\n",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "repo_key",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "remote_url",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "branch",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "repo_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "previous_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "head_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "should_skip",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "sync_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "sync_status",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": []
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "plan_exports",
+      "type": "transform",
+      "position": {
+        "x": 1500,
+        "y": 180
+      },
+      "data": {
+        "label": "Plan Exports",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": " set -eu\n\n  workspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\n  duckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n  artifact_root=\"${DOLT_ARTIFACT_ROOT:-artifacts/dolt}\"\n\n  csv_value() {\n    tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n  }\n\n  json_escape() {\n    sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'\n  }\n\n  safe_path_part() {\n    sed 's#[^A-Za-z0-9._-]#_#g'\n  }\n\n  input_value() {\n    col=\"$1\"\n    \"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \"select coalesce(cast(\\\"${col}\\\" as varchar), '') from \\\"$DUCKLE_INPUT_TABLE\\\" limit 1\" | csv_value\n  }\n\n  input_rows=\"${DUCKLE_INPUT_ROW_COUNT:-}\"\n  if [ -z \"$input_rows\" ] && [ -n \"${DUCKLE_INPUT_TABLE:-}\" ]; then\n    input_rows=\"$(\"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \"select count(*) as n from \\\"$DUCKLE_INPUT_TABLE\\\"\" | csv_value)\"\n  fi\n\n  if [ \"${input_rows:-0}\" -eq 0 ]; then\n    exit 0\n  fi\n\n  repo_key=\"$(input_value repo_key)\"\n  branch=\"$(input_value branch)\"\n  repo_path=\"$(input_value repo_path)\"\n  previous_commit=\"$(input_value previous_commit)\"\n  head_commit=\"$(input_value head_commit)\"\n  sync_ok=\"$(input_value sync_ok)\"\n  should_skip=\"$(input_value should_skip)\"\n\n  if [ \"$sync_ok\" != \"true\" ]; then\n    echo \"plan_exports: upstream sync did not succeed\" >&2\n    exit 1\n  fi\n\n  if [ \"$should_skip\" = \"true\" ]; then\n    echo \"plan_exports: upstream row is marked should_skip=true; route wiring is wrong\" >&2\n    exit 1\n  fi\n\n  cd \"$workspace\"\n\n  if [ ! -d \"$repo_path/.dolt\" ]; then\n    echo \"plan_exports: Dolt repo not found at $repo_path\" >&2\n    exit 1\n  fi\n\n  safe_branch=\"$(printf '%s' \"$branch\" | safe_path_part)\"\n\n  table_list=\"$(\n    cd \"$repo_path\" &&\n    dolt ls |\n      sed '1d; s/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d'\n  )\"\n\n  if [ -z \"$table_list\" ]; then\n    echo \"plan_exports: no base tables found in $repo_path\" >&2\n    exit 1\n  fi\n\n  reason=\"changed\"\n  if [ -z \"$previous_commit\" ]; then\n    reason=\"initial_load\"\n  fi\n\n  printf '%s\\n' \"$table_list\" | while IFS= read -r table_name; do\n    safe_table=\"$(printf '%s' \"$table_name\" | safe_path_part)\"\n\n    stage_path=\".stitchly/tmp/dolt/${repo_key}/${safe_branch}/${head_commit}/${safe_table}/snapshot.parquet\"\n    snapshot_path=\"${artifact_root}/${repo_key}/${safe_branch}/${safe_table}/snapshots/commit=${head_commit}/data.parquet\"\n\n    repo_key_json=\"$(printf '%s' \"$repo_key\" | json_escape)\"\n    branch_json=\"$(printf '%s' \"$branch\" | json_escape)\"\n    repo_path_json=\"$(printf '%s' \"$repo_path\" | json_escape)\"\n    table_name_json=\"$(printf '%s' \"$table_name\" | json_escape)\"\n    previous_commit_json=\"$(printf '%s' \"$previous_commit\" | json_escape)\"\n    head_commit_json=\"$(printf '%s' \"$head_commit\" | json_escape)\"\n    reason_json=\"$(printf '%s' \"$reason\" | json_escape)\"\n    stage_path_json=\"$(printf '%s' \"$stage_path\" | json_escape)\"\n    snapshot_path_json=\"$(printf '%s' \"$snapshot_path\" | json_escape)\"\n\n    printf '%s' '{\"repo_key\":\"'\n    printf '%s' \"$repo_key_json\"\n    printf '%s' '\",\"branch\":\"'\n    printf '%s' \"$branch_json\"\n    printf '%s' '\",\"repo_path\":\"'\n    printf '%s' \"$repo_path_json\"\n    printf '%s' '\",\"table_name\":\"'\n    printf '%s' \"$table_name_json\"\n    printf '%s' '\",\"previous_commit\":\"'\n    printf '%s' \"$previous_commit_json\"\n    printf '%s' '\",\"head_commit\":\"'\n    printf '%s' \"$head_commit_json\"\n    printf '%s' '\",\"export_mode\":\"snapshot\",\"reason\":\"'\n    printf '%s' \"$reason_json\"\n    printf '%s' '\",\"stage_path\":\"'\n    printf '%s' \"$stage_path_json\"\n    printf '%s' '\",\"snapshot_path\":\"'\n    printf '%s' \"$snapshot_path_json\"\n    printf '%s\\n' '\",\"delta_path\":\"\",\"should_export\":true}'\n  done\n",
+          "timeoutMs": 600000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 625,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-plan_exports-input-411177-436801377-ThreadId200.json",
+            "input_format": "jsonl",
+            "input_table": "export_gate",
+            "input_row_count": 0
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "parse_export_plan",
+      "type": "transform",
+      "position": {
+        "x": 1800,
+        "y": 180
+      },
+      "data": {
+        "label": "Parse Export Plan",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", raw as (\n    select\n      trim(coalesce(stdout, '')) as stdout_text,\n      coalesce(stderr, '') as stderr_text,\n      try_cast(exit_code as integer) as shell_exit_code,\n      try_cast(duration_ms as bigint) as shell_duration_ms\n    from input\n  ),\n  lines as (\n    select\n      row_number() over () as plan_row_number,\n      trim(line) as plan_json,\n      stderr_text,\n      shell_exit_code,\n      shell_duration_ms,\n      false as synthetic_error\n    from raw,\n      unnest(string_split(stdout_text, chr(10))) as t(line)\n    where trim(line) <> ''\n\n    union all\n\n    select\n      1 as plan_row_number,\n      '' as plan_json,\n      stderr_text,\n      shell_exit_code,\n      shell_duration_ms,\n      true as synthetic_error\n    from raw\n    where stdout_text = ''\n      and coalesce(shell_exit_code, -1) <> 0\n  ),\n  parsed as (\n    select\n      *,\n      case\n        when synthetic_error then null\n        else try_cast(plan_json as json)\n      end as payload\n    from lines\n  ),\n  fields as (\n    select\n      json_extract_string(payload, '$.repo_key') as repo_key,\n      json_extract_string(payload, '$.branch') as branch,\n      json_extract_string(payload, '$.repo_path') as repo_path,\n      json_extract_string(payload, '$.table_name') as table_name,\n      coalesce(json_extract_string(payload, '$.previous_commit'), '') as previous_commit,\n      coalesce(json_extract_string(payload, '$.head_commit'), '') as head_commit,\n      coalesce(json_extract_string(payload, '$.export_mode'), '') as export_mode,\n      coalesce(json_extract_string(payload, '$.reason'), '') as reason,\n      coalesce(json_extract_string(payload, '$.stage_path'), '') as stage_path,\n      coalesce(json_extract_string(payload, '$.snapshot_path'), '') as snapshot_path,\n      coalesce(json_extract_string(payload, '$.delta_path'), '') as delta_path,\n      coalesce(\n        try_cast(json_extract_string(payload, '$.should_export') as boolean),\n        false\n      ) as should_export,\n      plan_row_number,\n      plan_json,\n      stderr_text as raw_stderr,\n      shell_exit_code,\n      shell_duration_ms,\n      payload is not null as parsed_ok\n    from parsed\n  )\n  select\n    *,\n    coalesce(shell_exit_code, -1) = 0\n      and parsed_ok\n      and table_name <> ''\n      and head_commit <> ''\n      and export_mode <> '' as plan_ok,\n    case\n      when coalesce(shell_exit_code, -1) <> 0 then 'shell_failed'\n      when not parsed_ok then 'parse_failed'\n      when table_name = '' then 'missing_table'\n      when head_commit = '' then 'missing_commit'\n      when export_mode = '' then 'missing_export_mode'\n      when should_export then export_mode\n      else 'skip'\n    end as plan_status\n  from fields\n",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "repo_key",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "branch",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "repo_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "table_name",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "previous_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "head_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "export_mode",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "reason",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stage_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "snapshot_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "delta_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "should_export",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "plan_row_number",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "plan_json",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "plan_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "plan_status",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": []
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "export_tables_to_stage",
+      "type": "transform",
+      "position": {
+        "x": 2100,
+        "y": 180
+      },
+      "data": {
+        "label": "Export Tables To Stage",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nworkspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\njson_escape() {\n  sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'\n}\n\ncsv_value() {\n  tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n}\n\njson_field_at() {\n  field=\"$1\"\n  file=\"$2\"\n  offset=\"$3\"\n  \"$duckdb_bin\" -csv -c \"select coalesce(cast(${field} as varchar), '') from read_json_auto('${file}') limit 1 offset ${offset}\" |\n    csv_value\n}\n\ncd \"$workspace\"\n\nif [ \"${DUCKLE_INPUT_ROW_COUNT:-}\" = \"0\" ]; then\n  exit 0\nfi\n\nif [ ! -s \"$DUCKLE_INPUT_PATH\" ]; then\n  echo \"export_tables_to_stage: upstream input file is empty or missing\" >&2\n  exit 1\nfi\n\ninput_rows=\"$(\n  \"$duckdb_bin\" -csv -c \"select count(*) as n from read_json_auto('${DUCKLE_INPUT_PATH}')\" |\n    csv_value\n)\"\n\nif [ -z \"$input_rows\" ] || [ \"$input_rows\" -eq 0 ]; then\n  exit 0\nfi\n\nidx=0\nwhile [ \"$idx\" -lt \"$input_rows\" ]; do\n  repo_key=\"$(json_field_at repo_key \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  branch=\"$(json_field_at branch \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  repo_path=\"$(json_field_at repo_path \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  table_name=\"$(json_field_at table_name \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  previous_commit=\"$(json_field_at previous_commit \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  head_commit=\"$(json_field_at head_commit \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  export_mode=\"$(json_field_at export_mode \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  reason=\"$(json_field_at reason \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  stage_path=\"$(json_field_at stage_path \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  snapshot_path=\"$(json_field_at snapshot_path \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  plan_ok=\"$(json_field_at plan_ok \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  should_export=\"$(json_field_at should_export \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n\n  if [ \"$plan_ok\" != \"true\" ]; then\n    echo \"export_tables_to_stage: row $idx plan_ok is not true\" >&2\n    exit 1\n  fi\n\n  if [ \"$should_export\" != \"true\" ]; then\n    echo \"export_tables_to_stage: row $idx should_export is not true\" >&2\n    exit 1\n  fi\n\n  if [ \"$export_mode\" != \"snapshot\" ]; then\n    echo \"export_tables_to_stage: row $idx unsupported export_mode=$export_mode\" >&2\n    exit 1\n  fi\n\n  if [ ! -d \"$repo_path/.dolt\" ]; then\n    echo \"export_tables_to_stage: row $idx Dolt repo not found at $repo_path\" >&2\n    exit 1\n  fi\n\n  mkdir -p \"$(dirname \"$stage_path\")\"\n\n  row_count=\"$(\n    cd \"$repo_path\" &&\n      dolt sql -r csv -q \"select count(*) as n from $table_name\" |\n      csv_value\n  )\"\n\n  rm -f \"$stage_path\"\n\n  (\n    cd \"$repo_path\"\n    dolt table export --force --file-type parquet \"$table_name\" \"$workspace/$stage_path\" >&2\n  )\n\n  if [ ! -s \"$stage_path\" ]; then\n    echo \"export_tables_to_stage: row $idx export did not create non-empty file at $stage_path\" >&2\n    exit 1\n  fi\n\n  file_size=\"$(wc -c < \"$stage_path\" | tr -d ' ')\"\n\n  repo_key_json=\"$(printf '%s' \"$repo_key\" | json_escape)\"\n  branch_json=\"$(printf '%s' \"$branch\" | json_escape)\"\n  repo_path_json=\"$(printf '%s' \"$repo_path\" | json_escape)\"\n  table_name_json=\"$(printf '%s' \"$table_name\" | json_escape)\"\n  previous_commit_json=\"$(printf '%s' \"$previous_commit\" | json_escape)\"\n  head_commit_json=\"$(printf '%s' \"$head_commit\" | json_escape)\"\n  export_mode_json=\"$(printf '%s' \"$export_mode\" | json_escape)\"\n  reason_json=\"$(printf '%s' \"$reason\" | json_escape)\"\n  stage_path_json=\"$(printf '%s' \"$stage_path\" | json_escape)\"\n  snapshot_path_json=\"$(printf '%s' \"$snapshot_path\" | json_escape)\"\n\n  printf '%s' '{\"repo_key\":\"'\n  printf '%s' \"$repo_key_json\"\n  printf '%s' '\",\"branch\":\"'\n  printf '%s' \"$branch_json\"\n  printf '%s' '\",\"repo_path\":\"'\n  printf '%s' \"$repo_path_json\"\n  printf '%s' '\",\"table_name\":\"'\n  printf '%s' \"$table_name_json\"\n  printf '%s' '\",\"previous_commit\":\"'\n  printf '%s' \"$previous_commit_json\"\n  printf '%s' '\",\"head_commit\":\"'\n  printf '%s' \"$head_commit_json\"\n  printf '%s' '\",\"export_mode\":\"'\n  printf '%s' \"$export_mode_json\"\n  printf '%s' '\",\"reason\":\"'\n  printf '%s' \"$reason_json\"\n  printf '%s' '\",\"stage_path\":\"'\n  printf '%s' \"$stage_path_json\"\n  printf '%s' '\",\"snapshot_path\":\"'\n  printf '%s' \"$snapshot_path_json\"\n  printf '%s' '\",\"row_count\":'\n  printf '%s' \"$row_count\"\n  printf '%s' ',\"file_size_bytes\":'\n  printf '%s' \"$file_size\"\n  printf '%s\\n' ',\"export_ok\":true}'\n\n  idx=$((idx + 1))\ndone\n",
+          "timeoutMs": 3600000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 585,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-export_tables_to_stage-input-411177-126201424-ThreadId200.json",
+            "input_format": "jsonl",
+            "input_table": "parse_export_plan",
+            "input_row_count": 0
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "parse_export_result",
+      "type": "transform",
+      "position": {
+        "x": 2400,
+        "y": 180
+      },
+      "data": {
+        "label": "Parse Export Result",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", raw as (\n    select\n      trim(coalesce(stdout, '')) as stdout_text,\n      coalesce(stderr, '') as stderr_text,\n      try_cast(exit_code as integer) as shell_exit_code,\n      try_cast(duration_ms as bigint) as shell_duration_ms\n    from input\n  ),\n  lines as (\n    select\n      row_number() over () as export_row_number,\n      trim(line) as stdout_json,\n      stderr_text,\n      shell_exit_code,\n      shell_duration_ms,\n      false as synthetic_error\n    from raw,\n      unnest(string_split(stdout_text, chr(10))) as t(line)\n    where trim(line) <> ''\n\n    union all\n\n    select\n      1 as export_row_number,\n      '' as stdout_json,\n      stderr_text,\n      shell_exit_code,\n      shell_duration_ms,\n      true as synthetic_error\n    from raw\n    where stdout_text = ''\n      and coalesce(shell_exit_code, -1) <> 0\n  ),\n  parsed as (\n    select\n      *,\n      case\n        when synthetic_error then null\n        else try_cast(stdout_json as json)\n      end as payload\n    from lines\n  ),\n  fields as (\n    select\n      json_extract_string(payload, '$.repo_key') as repo_key,\n      json_extract_string(payload, '$.branch') as branch,\n      json_extract_string(payload, '$.repo_path') as repo_path,\n      json_extract_string(payload, '$.table_name') as table_name,\n      coalesce(json_extract_string(payload, '$.previous_commit'), '') as previous_commit,\n      coalesce(json_extract_string(payload, '$.head_commit'), '') as head_commit,\n      coalesce(json_extract_string(payload, '$.export_mode'), '') as export_mode,\n      coalesce(json_extract_string(payload, '$.reason'), '') as reason,\n      coalesce(json_extract_string(payload, '$.stage_path'), '') as stage_path,\n      coalesce(json_extract_string(payload, '$.snapshot_path'), '') as snapshot_path,\n      coalesce(try_cast(json_extract_string(payload, '$.row_count') as bigint), 0) as row_count,\n      coalesce(try_cast(json_extract_string(payload, '$.file_size_bytes') as bigint), 0) as file_size_bytes,\n      coalesce(try_cast(json_extract_string(payload, '$.export_ok') as boolean), false) as export_ok,\n      export_row_number,\n      shell_exit_code,\n      shell_duration_ms,\n      stdout_json as raw_stdout,\n      stderr_text as raw_stderr,\n      payload is not null as parsed_ok\n    from parsed\n  )\n  select\n    *,\n    coalesce(shell_exit_code, -1) = 0\n      and parsed_ok\n      and export_ok\n      and table_name <> ''\n      and head_commit <> ''\n      and stage_path <> ''\n      and file_size_bytes > 0 as export_result_ok,\n    case\n      when coalesce(shell_exit_code, -1) <> 0 then 'shell_failed'\n      when not parsed_ok then 'parse_failed'\n      when not export_ok then 'export_failed'\n      when table_name = '' then 'missing_table'\n      when head_commit = '' then 'missing_commit'\n      when stage_path = '' then 'missing_stage_path'\n      when file_size_bytes <= 0 then 'empty_export'\n      else 'ready_to_publish'\n    end as export_result_status\n  from fields\n",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "repo_key",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "branch",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "repo_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "table_name",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "previous_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "head_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "export_mode",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "reason",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stage_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "snapshot_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "row_count",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "file_size_bytes",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "export_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_row_number",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_result_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_result_status",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": []
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "validate_exports",
+      "type": "transform",
+      "position": {
+        "x": 2700,
+        "y": 180
+      },
+      "data": {
+        "label": "Validate Exports",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", checks as (\n    select\n      *,\n      coalesce(export_result_ok, false) as check_export_result_ok,\n      coalesce(stage_path, '') <> '' as check_stage_path_present,\n      coalesce(snapshot_path, '') <> '' as check_snapshot_path_present,\n      coalesce(table_name, '') <> '' as check_table_name_present,\n      coalesce(head_commit, '') <> '' as check_head_commit_present,\n      coalesce(row_count, 0) > 0 as check_row_count_positive,\n      coalesce(file_size_bytes, 0) > 0 as check_file_size_positive\n    from input\n  ),\n  scored as (\n    select\n      *,\n      check_export_result_ok\n        and check_stage_path_present\n        and check_snapshot_path_present\n        and check_table_name_present\n        and check_head_commit_present\n        and check_row_count_positive\n        and check_file_size_positive as export_validation_ok\n    from checks\n  )\n  select\n    *,\n    case\n      when not check_export_result_ok then 'export_result_not_ok'\n      when not check_stage_path_present then 'missing_stage_path'\n      when not check_snapshot_path_present then 'missing_snapshot_path'\n      when not check_table_name_present then 'missing_table_name'\n      when not check_head_commit_present then 'missing_head_commit'\n      when not check_row_count_positive then 'row_count_not_positive'\n      when not check_file_size_positive then 'file_size_not_positive'\n      else 'valid'\n    end as export_validation_status\n  from scored",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "repo_key",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "branch",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "repo_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "table_name",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "previous_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "head_commit",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "export_mode",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "reason",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stage_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "snapshot_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "row_count",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "file_size_bytes",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "export_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_row_number",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_result_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_result_status",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "check_export_result_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "check_stage_path_present",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "check_snapshot_path_present",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "check_table_name_present",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "check_head_commit_present",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "check_row_count_positive",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "check_file_size_positive",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_validation_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "export_validation_status",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": []
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "publish_and_update_state",
+      "type": "transform",
+      "position": {
+        "x": 3000,
+        "y": 180
+      },
+      "data": {
+        "label": "Publish And Update State",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nworkspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\nstate_db=\".stitchly/state/dolt_sync.duckdb\"\n\njson_escape() {\n  sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'\n}\n\nsql_escape() {\n  sed \"s/'/''/g\"\n}\n\ncsv_value() {\n  tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n}\n\njson_field_at() {\n  field=\"$1\"\n  file=\"$2\"\n  offset=\"$3\"\n  \"$duckdb_bin\" -csv -c \"select coalesce(cast(${field} as varchar), '') from read_json_auto('${file}') limit 1 offset ${offset}\" |\n    csv_value\n}\n\ncd \"$workspace\"\n\nif [ \"${DUCKLE_INPUT_ROW_COUNT:-}\" = \"0\" ]; then\n  exit 0\nfi\n\nif [ ! -s \"$DUCKLE_INPUT_PATH\" ]; then\n  echo \"publish_and_update_state: upstream input file is empty or missing\" >&2\n  exit 1\nfi\n\ninput_rows=\"$(\n  \"$duckdb_bin\" -csv -c \"select count(*) as n from read_json_auto('${DUCKLE_INPUT_PATH}')\" |\n    csv_value\n)\"\n\nif [ -z \"$input_rows\" ] || [ \"$input_rows\" -eq 0 ]; then\n  exit 0\nfi\n\nmkdir -p \"$(dirname \"$state_db\")\"\n\nidx=0\nwhile [ \"$idx\" -lt \"$input_rows\" ]; do\n  repo_key=\"$(json_field_at repo_key \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  branch=\"$(json_field_at branch \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  repo_path=\"$(json_field_at repo_path \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  table_name=\"$(json_field_at table_name \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  previous_commit=\"$(json_field_at previous_commit \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  head_commit=\"$(json_field_at head_commit \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  export_mode=\"$(json_field_at export_mode \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  reason=\"$(json_field_at reason \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  stage_path=\"$(json_field_at stage_path \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  snapshot_path=\"$(json_field_at snapshot_path \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  row_count=\"$(json_field_at row_count \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  file_size_bytes=\"$(json_field_at file_size_bytes \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  export_validation_ok=\"$(json_field_at export_validation_ok \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n  export_validation_status=\"$(json_field_at export_validation_status \"$DUCKLE_INPUT_PATH\" \"$idx\")\"\n\n  if [ \"$export_validation_ok\" != \"true\" ]; then\n    echo \"publish_and_update_state: row $idx validation failed: $export_validation_status\" >&2\n    exit 1\n  fi\n\n  if [ ! -s \"$stage_path\" ]; then\n    echo \"publish_and_update_state: row $idx staged file missing or empty: $stage_path\" >&2\n    exit 1\n  fi\n\n  mkdir -p \"$(dirname \"$snapshot_path\")\"\n\n  tmp_publish=\"${snapshot_path}.tmp.$$.$idx\"\n  rm -f \"$tmp_publish\"\n\n  cp \"$stage_path\" \"$tmp_publish\"\n\n  if [ ! -s \"$tmp_publish\" ]; then\n    echo \"publish_and_update_state: row $idx temp publish file missing or empty: $tmp_publish\" >&2\n    exit 1\n  fi\n\n  mv \"$tmp_publish\" \"$snapshot_path\"\n\n  published_size=\"$(wc -c < \"$snapshot_path\" | tr -d ' ')\"\n\n  if [ \"$published_size\" != \"$file_size_bytes\" ]; then\n    echo \"publish_and_update_state: row $idx published size mismatch staged=$file_size_bytes published=$published_size\" >&2\n    exit 1\n  fi\n\n  repo_key_sql=\"$(printf '%s' \"$repo_key\" | sql_escape)\"\n  branch_sql=\"$(printf '%s' \"$branch\" | sql_escape)\"\n  table_name_sql=\"$(printf '%s' \"$table_name\" | sql_escape)\"\n  remote_url_sql=\"$(printf '%s' \"\" | sql_escape)\"\n  head_commit_sql=\"$(printf '%s' \"$head_commit\" | sql_escape)\"\n  snapshot_path_sql=\"$(printf '%s' \"$snapshot_path\" | sql_escape)\"\n\n  \"$duckdb_bin\" \"$state_db\" -c \"\n  create table if not exists dolt_sync (\n    repo_key text,\n    remote_url text,\n    branch text,\n    table_name text,\n    last_processed_commit text,\n    last_snapshot_commit text,\n    schema_hash text,\n    artifact_manifest_path text,\n    row_count bigint,\n    updated_at timestamp\n  );\n\n  insert into dolt_sync (\n    repo_key,\n    remote_url,\n    branch,\n    table_name,\n    last_processed_commit,\n    last_snapshot_commit,\n    schema_hash,\n    artifact_manifest_path,\n    row_count,\n    updated_at\n  )\n  values (\n    '${repo_key_sql}',\n    '${remote_url_sql}',\n    '${branch_sql}',\n    '${table_name_sql}',\n    '${head_commit_sql}',\n    '${head_commit_sql}',\n    '',\n    '${snapshot_path_sql}',\n    ${row_count},\n    current_timestamp\n  );\n  \" >&2\n\n  repo_key_json=\"$(printf '%s' \"$repo_key\" | json_escape)\"\n  branch_json=\"$(printf '%s' \"$branch\" | json_escape)\"\n  repo_path_json=\"$(printf '%s' \"$repo_path\" | json_escape)\"\n  table_name_json=\"$(printf '%s' \"$table_name\" | json_escape)\"\n  previous_commit_json=\"$(printf '%s' \"$previous_commit\" | json_escape)\"\n  head_commit_json=\"$(printf '%s' \"$head_commit\" | json_escape)\"\n  export_mode_json=\"$(printf '%s' \"$export_mode\" | json_escape)\"\n  reason_json=\"$(printf '%s' \"$reason\" | json_escape)\"\n  stage_path_json=\"$(printf '%s' \"$stage_path\" | json_escape)\"\n  snapshot_path_json=\"$(printf '%s' \"$snapshot_path\" | json_escape)\"\n\n  printf '%s' '{\"repo_key\":\"'\n  printf '%s' \"$repo_key_json\"\n  printf '%s' '\",\"branch\":\"'\n  printf '%s' \"$branch_json\"\n  printf '%s' '\",\"repo_path\":\"'\n  printf '%s' \"$repo_path_json\"\n  printf '%s' '\",\"table_name\":\"'\n  printf '%s' \"$table_name_json\"\n  printf '%s' '\",\"previous_commit\":\"'\n  printf '%s' \"$previous_commit_json\"\n  printf '%s' '\",\"head_commit\":\"'\n  printf '%s' \"$head_commit_json\"\n  printf '%s' '\",\"export_mode\":\"'\n  printf '%s' \"$export_mode_json\"\n  printf '%s' '\",\"reason\":\"'\n  printf '%s' \"$reason_json\"\n  printf '%s' '\",\"stage_path\":\"'\n  printf '%s' \"$stage_path_json\"\n  printf '%s' '\",\"snapshot_path\":\"'\n  printf '%s' \"$snapshot_path_json\"\n  printf '%s' '\",\"row_count\":'\n  printf '%s' \"$row_count\"\n  printf '%s' ',\"file_size_bytes\":'\n  printf '%s' \"$file_size_bytes\"\n  printf '%s' ',\"published_size_bytes\":'\n  printf '%s' \"$published_size\"\n  printf '%s\\n' ',\"publish_ok\":true,\"state_updated\":true}'\n\n  idx=$((idx + 1))\ndone\n",
+          "timeoutMs": 3600000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 625,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-publish_and_update_state-input-411177-907377752-ThreadId200.json",
+            "input_format": "jsonl",
+            "input_table": "validate_exports",
+            "input_row_count": 0
+          }
+        ]
+      },
+      "measured": {
+        "width": 224,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "log_done",
+      "type": "transform",
+      "position": {
+        "x": 3300,
+        "y": 180
+      },
+      "data": {
+        "label": "Log Done",
+        "componentId": "ctl.log",
+        "properties": {
+          "message": "Dolt rates sync complete; published rows: {rows}"
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 625,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-publish_and_update_state-input-411177-907377752-ThreadId200.json",
+            "input_format": "jsonl",
+            "input_table": "validate_exports",
+            "input_row_count": 0
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 126
+      },
+      "selected": false,
+      "dragging": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__repo_configmain-sync_repomain",
+      "source": "repo_config",
+      "sourceHandle": "main",
+      "target": "sync_repo",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__sync_repomain-parse_sync_resultmain",
+      "source": "sync_repo",
+      "sourceHandle": "main",
+      "target": "parse_sync_result",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__parse_sync_resultmain-assert_sync_okmain",
+      "source": "parse_sync_result",
+      "sourceHandle": "main",
+      "target": "assert_sync_ok",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__assert_sync_okmain-export_gatemain",
+      "source": "assert_sync_ok",
+      "sourceHandle": "main",
+      "target": "export_gate",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__export_gatemain-plan_exportsmain",
+      "source": "export_gate",
+      "sourceHandle": "main",
+      "target": "plan_exports",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__plan_exportsmain-parse_export_planmain",
+      "source": "plan_exports",
+      "sourceHandle": "main",
+      "target": "parse_export_plan",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__parse_export_planmain-export_tables_to_stagemain",
+      "source": "parse_export_plan",
+      "sourceHandle": "main",
+      "target": "export_tables_to_stage",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__export_tables_to_stagemain-parse_export_resultmain",
+      "source": "export_tables_to_stage",
+      "sourceHandle": "main",
+      "target": "parse_export_result",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__parse_export_resultmain-validate_exportsmain",
+      "source": "parse_export_result",
+      "sourceHandle": "main",
+      "target": "validate_exports",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__validate_exportsmain-publish_and_update_statemain",
+      "source": "validate_exports",
+      "sourceHandle": "main",
+      "target": "publish_and_update_state",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "xy-edge__publish_and_update_statemain-log_donemain",
+      "source": "publish_and_update_state",
+      "sourceHandle": "main",
+      "target": "log_done",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    }
+  ]
+}

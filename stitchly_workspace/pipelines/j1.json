@@ -16,9 +16,9 @@
       },
       "measured": {
         "width": 220,
-        "height": 127
+        "height": 128
       },
-      "selected": false
+      "selected": true
     },
     {
       "id": "t1",
@@ -36,7 +36,7 @@
       },
       "measured": {
         "width": 220,
-        "height": 171
+        "height": 172
       },
       "selected": false,
       "dragging": false
@@ -55,8 +55,9 @@
       },
       "measured": {
         "width": 220,
-        "height": 127
-      }
+        "height": 128
+      },
+      "selected": false
     }
   ],
   "edges": [
