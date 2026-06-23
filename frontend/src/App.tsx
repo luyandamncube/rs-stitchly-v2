@@ -678,6 +678,10 @@ export default function App() {
         const parts = workspacePathState.split(/[\\/]/).filter(Boolean);
         return parts[parts.length - 1] ?? workspacePathState;
     }, [workspacePathState]);
+    const workspaceButtonLabel = workspaceFolderName ?? t('topbar.setWorkspace');
+    const workspaceButtonTitle = workspacePathState
+        ? t('topbar.workspaceTooltip', { path: workspacePathState })
+        : t('topbar.setWorkspaceTooltip');
 
     useEffect(() => {
         let cancelled = false;
@@ -1842,17 +1846,15 @@ export default function App() {
                 <div className="topbar-sep" aria-hidden="true" />
                 <EngineSelector value={engine} onChange={setEngine} />
                 <div className="topbar-spacer" data-tauri-drag-region />
-                {workspaceFolderName ? (
-                    <button
-                        type="button"
-                        className="topbar-workspace"
-                        onClick={handleSwitchWorkspace}
-                        title={t('topbar.workspaceTooltip', { path: workspacePathState })}
-                    >
-                        <FolderOpen size={12} />
-                        <span className="topbar-workspace-name">{workspaceFolderName}</span>
-                    </button>
-                ) : null}
+                <button
+                    type="button"
+                    className="topbar-workspace"
+                    onClick={handleSwitchWorkspace}
+                    title={workspaceButtonTitle}
+                >
+                    <FolderOpen size={12} />
+                    <span className="topbar-workspace-name">{workspaceButtonLabel}</span>
+                </button>
                 {contexts.length > 0 ? (
                     <div
                         className="topbar-context"

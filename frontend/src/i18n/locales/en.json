@@ -1,6 +1,8 @@
 {
   "topbar": {
     "workspaceTooltip": "Workspace: {{path}}\nClick to switch",
+    "setWorkspace": "Set workspace",
+    "setWorkspaceTooltip": "Choose a workspace folder",
     "activeContextHint": "Active context - fields can bind to its variables",
     "noContext": "No context",
     "git": "Git (workspace)",
