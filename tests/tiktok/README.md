@@ -20,6 +20,59 @@ Optional tools:
 - `curl` for API and oEmbed probes.
 - `python3` for URL encoding and report generation.
 
+## OAuth Setup
+
+If you only have the TikTok developer app client key/secret, first generate a
+user access token through Login Kit OAuth.
+
+Fill these values in `tests/tiktok/.env`:
+
+```bash
+TIKTOK_CLIENT_KEY=
+TIKTOK_CLIENT_SECRET=
+TIKTOK_REDIRECT_URI=https://example.com/tiktok/callback
+TIKTOK_SCOPES=user.info.basic,video.list
+```
+
+`TIKTOK_REDIRECT_URI` must exactly match a redirect URI configured in the
+TikTok developer app's Login Kit product. TikTok's Web Login docs require HTTPS
+redirect URIs for web apps, so use your configured HTTPS callback or a temporary
+HTTPS tunnel if needed.
+
+Generate the authorization URL:
+
+```bash
+bash tests/tiktok/oauth_start.sh
+```
+
+Open the printed URL in a browser. After approval, TikTok redirects to your
+callback URL with a `code=...` query parameter. Copy that code into `.env`:
+
+```bash
+TIKTOK_AUTH_CODE=...
+```
+
+Exchange the authorization code for tokens:
+
+```bash
+bash tests/tiktok/oauth_exchange.sh
+```
+
+The raw response is written to:
+
+```text
+tests/tiktok/out/oauth_token_response.json
+```
+
+The script also writes a local token snippet to:
+
+```text
+tests/tiktok/out/oauth_tokens.env
+```
+
+Copy the returned `TIKTOK_ACCESS_TOKEN` into `tests/tiktok/.env`, then run the
+main probe.
+
 ## Run
 
 ```bash
