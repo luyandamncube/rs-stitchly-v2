@@ -1,0 +1,5 @@
+out/
+downloads/
+.env
+__pycache__/
+*.pyc
