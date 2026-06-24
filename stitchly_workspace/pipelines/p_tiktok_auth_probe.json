@@ -11,7 +11,7 @@
         "label": "Auth Config",
         "componentId": "code.sql",
         "properties": {
-          "sql": "  select\n    '../docs/tiktok' as tiktok_root,\n    '../docs/tiktok/.env.tiktok' as env_file,\n    '../docs/tiktok/out/tiktok_tokens.json' as token_file,\n    '../docs/tiktok/out' as out_dir,\n    'artifacts/tiktok/auth_probe/data.parquet' as artifact_path;",
+          "sql": "  select\n    '../docs/tiktok' as tiktok_root,\n    '../docs/tiktok/.env.tiktok' as env_file,\n    '.stitchly/secrets/tiktok' as out_dir,\n    '.stitchly/secrets/tiktok/tiktok_tokens.json' as token_file,\n    'artifacts/tiktok/auth_probe/data.parquet' as artifact_path;",
           "loadSpatial": false
         },
         "schema": [
@@ -26,12 +26,12 @@
             "nullable": true
           },
           {
-            "name": "token_file",
+            "name": "out_dir",
             "type": "string",
             "nullable": true
           },
           {
-            "name": "out_dir",
+            "name": "token_file",
             "type": "string",
             "nullable": true
           },
@@ -45,8 +45,8 @@
           {
             "tiktok_root": "../docs/tiktok",
             "env_file": "../docs/tiktok/.env.tiktok",
-            "token_file": "../docs/tiktok/out/tiktok_tokens.json",
-            "out_dir": "../docs/tiktok/out",
+            "out_dir": ".stitchly/secrets/tiktok",
+            "token_file": ".stitchly/secrets/tiktok/tiktok_tokens.json",
             "artifact_path": "artifacts/tiktok/auth_probe/data.parquet"
           }
         ]
@@ -117,11 +117,11 @@
         ],
         "sampleRows": [
           {
-            "stdout": "{\"ok\":false,\"probe_script_exit_code\":1,\"token_file\":\"../docs/tiktok/out/tiktok_tokens.json\",\"error\":\"probe did not produce report\",\"wrapper_stdout_file\":\"../docs/tiktok/out/auth_probe.wrapper.stdout.txt\",\"wrapper_stderr_file\":\"../docs/tiktok/out/auth_probe.wrapper.stderr.txt\"}\n",
+            "stdout": "{\n  \"generated_at_epoch\": 1782336096,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"ok\": true,\n  \"steps\": [\n    {\n      \"name\": \"auth_status\",\n      \"script\": \"tiktok_auth_status.sh\",\n      \"status\": \"ok\",\n      \"exit_code\": 0,\n      \"duration_seconds\": 0,\n      \"stdout_file\": \".stitchly/secrets/tiktok/auth_status.stdout.txt\",\n      \"stderr_file\": \".stitchly/secrets/tiktok/auth_status.stderr.txt\",\n      \"stdout_preview\": \"{\\n  \\\"token_file\\\": \\\".stitchly/secrets/tiktok/tiktok_tokens.json\\\",\\n  \\\"has_access_token\\\": true,\\n  \\\"has_refresh_token\\\": true,\\n  \\\"open_id_present\\\": true,\\n  \\\"scope\\\": \\\"user.info.basic,video.list\\\",\\n  \\\"saved_at_epoch\\\": 1782336057,\\n  \\\"access_token_expires_at_epoch\\\": 1782422457,\",\n      \"stderr_preview\": \"\"\n    },\n    {\n      \"name\": \"user_info_probe\",\n      \"script\": \"tiktok_user_info.sh\",\n      \"status\": \"ok\",\n      \"exit_code\": 0,\n      \"duration_seconds\": 1,\n      \"stdout_file\": \".stitchly/secrets/tiktok/user_info_probe.stdout.txt\",\n      \"stderr_file\": \".stitchly/secrets/tiktok/user_info_probe.stderr.txt\",\n      \"stdout_preview\": \"{\\n  \\\"data\\\": {\\n    \\\"user\\\": {\\n      \\\"avatar_url\\\": \\\"https://p16-common-sign.tiktokcdn.com/tos-maliva-avt-0068/eeea8194711fd3cf09179a8313cf916e~tplv-tiktokx-cropcenter:168:168.jpeg?dr=14577&refresh_token=7af12e92&x-expires=1782507600&x-signature=bSp%2BI0qNqUAqhRH0Wp3oF%2BJh7MQ%3D&t=4d5b0474&ps=13740610&shp=a5d48078&shcp=8aecc5ac&idc=my\\\",\\n      \\\"display_name\\\": \\\"Luyanda\\\",\\n      \\\"open_id\\\": \\\"-000Wsp3wKjmL7pKaFVZbxu7-kG3Zligl2l0\\\",\\n      \\\"union_id\\\": \\\"f57741ab-ac1e-5f49-b403-fa69e220d3eb\\\"\\n    }\",\n      \"stderr_preview\": \"\"\n    },\n    {\n      \"name\": \"video_list_probe\",\n      \"script\": \"tiktok_video_list.sh\",\n      \"status\": \"ok\",\n      \"exit_code\": 0,\n      \"duration_seconds\": 2,\n      \"stdout_file\": \".stitchly/secrets/tiktok/video_list_probe.stdout.txt\",\n      \"stderr_file\": \".stitchly/secrets/tiktok/video_list_probe.stderr.txt\",\n      \"stdout_preview\": \"{\\n  \\\"data\\\": {\\n    \\\"cursor\\\": 1737706691000,\\n    \\\"has_more\\\": false,\\n    \\\"videos\\\": [\\n      {\\n        \\\"create_time\\\": 1738848443,\\n        \\\"duration\\\": 25,\",\n      \"stderr_preview\": \"\"\n    }\n  ],\n  \"artifacts\": {\n    \"auth_status\": \".stitchly/secrets/tiktok/auth_status.json\",\n    \"user_info\": \".stitchly/secrets/tiktok/user_info_response.json\",\n    \"video_list\": \".stitchly/secrets/tiktok/video_list_response.json\"\n  },\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 86364,\n    \"refresh_token_seconds_remaining\": 31535964\n  },\n  \"user_info_summary\": {\n    \"ok\": false,\n    \"open_id_present\": true,\n    \"display_name_present\": true,\n    \"error\": {\n      \"code\": \"ok\",\n      \"message\": \"\",\n      \"log_id\": \"202606250521349700FBCC0EC8A3E5109C\"\n    }\n  },\n  \"video_list_summary\": {\n    \"ok\": false,\n    \"video_count\": 2,\n    \"has_cursor\": true,\n    \"has_more\": null,\n    \"error\": {\n      \"code\": \"ok\",\n      \"message\": \"\",\n      \"log_id\": \"202606250521359700FBCC0EC8A3E51140\"\n    }\n  },\n  \"probe_script_exit_code\": 0,\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_probe.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_probe.wrapper.stderr.txt\"\n}\n",
             "stderr": "",
             "exit_code": 0,
-            "duration_ms": 3077,
-            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-run_auth_probe-input-441465-943775623-ThreadId197.json",
+            "duration_ms": 4331,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-run_auth_probe-input-441465-894405591-ThreadId487.json",
             "input_format": "jsonl",
             "input_table": "auth_config",
             "input_row_count": 1
@@ -278,30 +278,30 @@
         ],
         "sampleRows": [
           {
-            "checked_at": "2026-06-24 22:27:29.719+02",
-            "auth_probe_ok": false,
-            "probe_script_exit_code": 1,
+            "checked_at": "2026-06-24 23:21:37.087+02",
+            "auth_probe_ok": true,
+            "probe_script_exit_code": 0,
             "shell_exit_code": 0,
-            "shell_duration_ms": 3077,
-            "token_file": "../docs/tiktok/out/tiktok_tokens.json",
-            "access_token_seconds_remaining": null,
-            "refresh_token_seconds_remaining": null,
-            "has_access_token": false,
-            "has_refresh_token": false,
+            "shell_duration_ms": 4331,
+            "token_file": ".stitchly/secrets/tiktok/tiktok_tokens.json",
+            "access_token_seconds_remaining": 86364,
+            "refresh_token_seconds_remaining": 31535964,
+            "has_access_token": true,
+            "has_refresh_token": true,
             "user_info_ok": false,
-            "open_id_present": false,
+            "open_id_present": true,
             "video_list_ok": false,
-            "video_count": 0,
-            "video_error_code": null,
-            "video_error_message": null,
-            "auth_status_artifact": null,
-            "user_info_artifact": null,
-            "video_list_artifact": null,
-            "wrapper_stdout_file": "../docs/tiktok/out/auth_probe.wrapper.stdout.txt",
-            "wrapper_stderr_file": "../docs/tiktok/out/auth_probe.wrapper.stderr.txt",
+            "video_count": 2,
+            "video_error_code": "ok",
+            "video_error_message": "",
+            "auth_status_artifact": ".stitchly/secrets/tiktok/auth_status.json",
+            "user_info_artifact": ".stitchly/secrets/tiktok/user_info_response.json",
+            "video_list_artifact": ".stitchly/secrets/tiktok/video_list_response.json",
+            "wrapper_stdout_file": ".stitchly/secrets/tiktok/auth_probe.wrapper.stdout.txt",
+            "wrapper_stderr_file": ".stitchly/secrets/tiktok/auth_probe.wrapper.stderr.txt",
             "parsed_ok": true,
-            "auth_probe_status": "auth_probe_failed",
-            "raw_stdout": "{\"ok\":false,\"probe_script_exit_code\":1,\"token_file\":\"../docs/tiktok/out/tiktok_tokens.json\",\"error\":\"probe did not produce report\",\"wrapper_stdout_file\":\"../docs/tiktok/out/auth_probe.wrapper.stdout.txt\",\"wrapper_stderr_file\":\"../docs/tiktok/out/auth_probe.wrapper.stderr.txt\"}\n",
+            "auth_probe_status": "ok",
+            "raw_stdout": "{\n  \"generated_at_epoch\": 1782336096,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"ok\": true,\n  \"steps\": [\n    {\n      \"name\": \"auth_status\",\n      \"script\": \"tiktok_auth_status.sh\",\n      \"status\": \"ok\",\n      \"exit_code\": 0,\n      \"duration_seconds\": 0,\n      \"stdout_file\": \".stitchly/secrets/tiktok/auth_status.stdout.txt\",\n      \"stderr_file\": \".stitchly/secrets/tiktok/auth_status.stderr.txt\",\n      \"stdout_preview\": \"{\\n  \\\"token_file\\\": \\\".stitchly/secrets/tiktok/tiktok_tokens.json\\\",\\n  \\\"has_access_token\\\": true,\\n  \\\"has_refresh_token\\\": true,\\n  \\\"open_id_present\\\": true,\\n  \\\"scope\\\": \\\"user.info.basic,video.list\\\",\\n  \\\"saved_at_epoch\\\": 1782336057,\\n  \\\"access_token_expires_at_epoch\\\": 1782422457,\",\n      \"stderr_preview\": \"\"\n    },\n    {\n      \"name\": \"user_info_probe\",\n      \"script\": \"tiktok_user_info.sh\",\n      \"status\": \"ok\",\n      \"exit_code\": 0,\n      \"duration_seconds\": 1,\n      \"stdout_file\": \".stitchly/secrets/tiktok/user_info_probe.stdout.txt\",\n      \"stderr_file\": \".stitchly/secrets/tiktok/user_info_probe.stderr.txt\",\n      \"stdout_preview\": \"{\\n  \\\"data\\\": {\\n    \\\"user\\\": {\\n      \\\"avatar_url\\\": \\\"https://p16-common-sign.tiktokcdn.com/tos-maliva-avt-0068/eeea8194711fd3cf09179a8313cf916e~tplv-tiktokx-cropcenter:168:168.jpeg?dr=14577&refresh_token=7af12e92&x-expires=1782507600&x-signature=bSp%2BI0qNqUAqhRH0Wp3oF%2BJh7MQ%3D&t=4d5b0474&ps=13740610&shp=a5d48078&shcp=8aecc5ac&idc=my\\\",\\n      \\\"display_name\\\": \\\"Luyanda\\\",\\n      \\\"open_id\\\": \\\"-000Wsp3wKjmL7pKaFVZbxu7-kG3Zligl2l0\\\",\\n      \\\"union_id\\\": \\\"f57741ab-ac1e-5f49-b403-fa69e220d3eb\\\"\\n    }\",\n      \"stderr_preview\": \"\"\n    },\n    {\n      \"name\": \"video_list_probe\",\n      \"script\": \"tiktok_video_list.sh\",\n      \"status\": \"ok\",\n      \"exit_code\": 0,\n      \"duration_seconds\": 2,\n      \"stdout_file\": \".stitchly/secrets/tiktok/video_list_probe.stdout.txt\",\n      \"stderr_file\": \".stitchly/secrets/tiktok/video_list_probe.stderr.txt\",\n      \"stdout_preview\": \"{\\n  \\\"data\\\": {\\n    \\\"cursor\\\": 1737706691000,\\n    \\\"has_more\\\": false,\\n    \\\"videos\\\": [\\n      {\\n        \\\"create_time\\\": 1738848443,\\n        \\\"duration\\\": 25,\",\n      \"stderr_preview\": \"\"\n    }\n  ],\n  \"artifacts\": {\n    \"auth_status\": \".stitchly/secrets/tiktok/auth_status.json\",\n    \"user_info\": \".stitchly/secrets/tiktok/user_info_response.json\",\n    \"video_list\": \".stitchly/secrets/tiktok/video_list_response.json\"\n  },\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 86364,\n    \"refresh_token_seconds_remaining\": 31535964\n  },\n  \"user_info_summary\": {\n    \"ok\": false,\n    \"open_id_present\": true,\n    \"display_name_present\": true,\n    \"error\": {\n      \"code\": \"ok\",\n      \"message\": \"\",\n      \"log_id\": \"202606250521349700FBCC0EC8A3E5109C\"\n    }\n  },\n  \"video_list_summary\": {\n    \"ok\": false,\n    \"video_count\": 2,\n    \"has_cursor\": true,\n    \"has_more\": null,\n    \"error\": {\n      \"code\": \"ok\",\n      \"message\": \"\",\n      \"log_id\": \"202606250521359700FBCC0EC8A3E51140\"\n    }\n  },\n  \"probe_script_exit_code\": 0,\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_probe.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_probe.wrapper.stderr.txt\"\n}\n",
             "raw_stderr": ""
           }
         ]
@@ -372,11 +372,11 @@
         ],
         "sampleRows": [
           {
-            "stdout": "TikTok auth probe FAILED: status=auth_probe_failed user_info=false video_list=false videos=0 access_token_seconds_remaining=unknown refresh_token_seconds_remaining=unknown\n",
+            "stdout": "TikTok auth probe OK: user_info=false video_list=false videos=2 access_token_seconds_remaining=86364 refresh_token_seconds_remaining=31535964\n",
             "stderr": "",
             "exit_code": 0,
-            "duration_ms": 6006,
-            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-log_auth_result-input-441465-614362654-ThreadId197.json",
+            "duration_ms": 2786,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-log_auth_result-input-441465-40890492-ThreadId487.json",
             "input_format": "jsonl",
             "input_table": "parse_auth_probe_report",
             "input_row_count": 1

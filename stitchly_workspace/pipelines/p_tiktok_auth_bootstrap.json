@@ -1,0 +1,534 @@
+{
+  "nodes": [
+    {
+      "id": "auth_config",
+      "type": "source",
+      "position": {
+        "x": 0,
+        "y": 180
+      },
+      "data": {
+        "label": "Auth Config",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": "  select\n    '../docs/tiktok' as tiktok_root,\n    '../docs/tiktok/.env.tiktok' as env_file,\n    '.stitchly/secrets/tiktok' as out_dir,\n    '.stitchly/secrets/tiktok/tiktok_tokens.json' as token_file,\n    'artifacts/tiktok/auth_bootstrap/data.parquet' as artifact_path,\n    180 as wait_timeout_seconds;",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "tiktok_root",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "env_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "out_dir",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "token_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "artifact_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "wait_timeout_seconds",
+            "type": "int32",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "tiktok_root": "../docs/tiktok",
+            "env_file": "../docs/tiktok/.env.tiktok",
+            "out_dir": ".stitchly/secrets/tiktok",
+            "token_file": ".stitchly/secrets/tiktok/tiktok_tokens.json",
+            "artifact_path": "artifacts/tiktok/auth_bootstrap/data.parquet",
+            "wait_timeout_seconds": 180
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "make_auth_url",
+      "type": "transform",
+      "position": {
+        "x": 300,
+        "y": 180
+      },
+      "data": {
+        "label": "Make Auth URL",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nworkspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\ncsv_value() {\n  tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n}\n\ninput_value() {\n  col=\"$1\"\n  \"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \"select coalesce(cast(\\\"${col}\\\" as varchar), '') from \\\"$DUCKLE_INPUT_TABLE\\\" limit 1\" | csv_value\n}\n\njson_escape() {\n  sed 's/\\\\/\\\\\\\\/g; s/\"/\\\\\"/g'\n}\n\ncd \"$workspace\"\n\ntiktok_root=\"$(input_value tiktok_root)\"\nenv_file=\"$(input_value env_file)\"\nout_dir=\"$(input_value out_dir)\"\ntoken_file=\"$(input_value token_file)\"\nwait_timeout_seconds=\"$(input_value wait_timeout_seconds)\"\n\nmkdir -p \"$out_dir\"\n\nexport TIKTOK_ENV_FILE=\"$env_file\"\nexport TIKTOK_OUT_DIR=\"$out_dir\"\nexport TIKTOK_TOKEN_FILE=\"$token_file\"\nexport TIKTOK_OPEN_BROWSER=\"false\"\nif [ -n \"$wait_timeout_seconds\" ]; then\n  export TIKTOK_CODE_POLL_TIMEOUT_SECONDS=\"$wait_timeout_seconds\"\nfi\n\nwrapper_stdout=\"$out_dir/auth_make_url.wrapper.stdout.txt\"\nwrapper_stderr=\"$out_dir/auth_make_url.wrapper.stderr.txt\"\nmake_url_exit_code=0\n\nif bash \"$tiktok_root/tiktok_make_auth_url.sh\" > \"$wrapper_stdout\" 2> \"$wrapper_stderr\"; then\n  make_url_exit_code=0\nelse\n  make_url_exit_code=$?\nfi\n\nauth_url=\"\"\nstate=\"\"\nif [ -s \"$out_dir/oauth_authorize_url.txt\" ]; then\n  auth_url=\"$(tr -d '\\r\\n' < \"$out_dir/oauth_authorize_url.txt\")\"\nfi\nif [ -s \"$out_dir/oauth_state.txt\" ]; then\n  state=\"$(tr -d '\\r\\n' < \"$out_dir/oauth_state.txt\")\"\nfi\n\nauth_url_json=\"$(printf '%s' \"$auth_url\" | json_escape)\"\nstate_json=\"$(printf '%s' \"$state\" | json_escape)\"\ntiktok_root_json=\"$(printf '%s' \"$tiktok_root\" | json_escape)\"\nenv_file_json=\"$(printf '%s' \"$env_file\" | json_escape)\"\nout_dir_json=\"$(printf '%s' \"$out_dir\" | json_escape)\"\ntoken_file_json=\"$(printf '%s' \"$token_file\" | json_escape)\"\nwrapper_stdout_json=\"$(printf '%s' \"$wrapper_stdout\" | json_escape)\"\nwrapper_stderr_json=\"$(printf '%s' \"$wrapper_stderr\" | json_escape)\"\n\nprintf '{\"ok\":%s,\"make_url_exit_code\":%s,\"auth_url\":\"%s\",\"state\":\"%s\",\"tiktok_root\":\"%s\",\"env_file\":\"%s\",\"out_dir\":\"%s\",\"token_file\":\"%s\",\"wait_timeout_seconds\":%s,\"wrapper_stdout_file\":\"%s\",\"wrapper_stderr_file\":\"%s\"}\\n' \\\n  \"$([ \"$make_url_exit_code\" -eq 0 ] && [ -n \"$auth_url\" ] && printf true || printf false)\" \\\n  \"$make_url_exit_code\" \\\n  \"$auth_url_json\" \\\n  \"$state_json\" \\\n  \"$tiktok_root_json\" \\\n  \"$env_file_json\" \\\n  \"$out_dir_json\" \\\n  \"$token_file_json\" \\\n  \"${wait_timeout_seconds:-0}\" \\\n  \"$wrapper_stdout_json\" \\\n  \"$wrapper_stderr_json\"\n\nexit 0",
+          "timeoutMs": 30000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "{\"ok\":true,\"make_url_exit_code\":0,\"auth_url\":\"https://www.tiktok.com/v2/auth/authorize/?client_key=sbaw8u3zkwjp5qvpcz&response_type=code&scope=user.info.basic%2Cvideo.list&redirect_uri=https%3A%2F%2Fthreadback.vercel.app%2Fapi%2Fcallback&state=0fed089c55f2b49585ed6753cd49522b\",\"state\":\"0fed089c55f2b49585ed6753cd49522b\",\"tiktok_root\":\"../docs/tiktok\",\"env_file\":\"../docs/tiktok/.env.tiktok\",\"out_dir\":\".stitchly/secrets/tiktok\",\"token_file\":\".stitchly/secrets/tiktok/tiktok_tokens.json\",\"wait_timeout_seconds\":180,\"wrapper_stdout_file\":\".stitchly/secrets/tiktok/auth_make_url.wrapper.stdout.txt\",\"wrapper_stderr_file\":\".stitchly/secrets/tiktok/auth_make_url.wrapper.stderr.txt\"}\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 1828,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-make_auth_url-input-441465-912883771-ThreadId452.json",
+            "input_format": "jsonl",
+            "input_table": "auth_config",
+            "input_row_count": 1
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "wait_and_exchange_auth",
+      "type": "transform",
+      "position": {
+        "x": 600,
+        "y": 180
+      },
+      "data": {
+        "label": "Wait And Exchange Auth",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nworkspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\ncsv_value() {\n  tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n}\n\ninput_json_value() {\n  field=\"$1\"\n  \"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \"select coalesce(json_extract_string(try_cast(stdout as json), '$.${field}'), '') from \\\"$DUCKLE_INPUT_TABLE\\\" limit 1\" | csv_value\n}\n\ncd \"$workspace\"\n\ntiktok_root=\"$(input_json_value tiktok_root)\"\nenv_file=\"$(input_json_value env_file)\"\nout_dir=\"$(input_json_value out_dir)\"\ntoken_file=\"$(input_json_value token_file)\"\nstate=\"$(input_json_value state)\"\nwait_timeout_seconds=\"$(input_json_value wait_timeout_seconds)\"\nmake_url_ok=\"$(input_json_value ok)\"\n\nif [ \"$make_url_ok\" != \"true\" ]; then\n  echo \"wait_and_exchange_auth: auth URL generation did not succeed\" >&2\n  exit 1\nfi\n\nexport TIKTOK_ENV_FILE=\"$env_file\"\nexport TIKTOK_OUT_DIR=\"$out_dir\"\nexport TIKTOK_TOKEN_FILE=\"$token_file\"\nif [ -n \"$wait_timeout_seconds\" ] && [ \"$wait_timeout_seconds\" != \"0\" ]; then\n  export TIKTOK_CODE_POLL_TIMEOUT_SECONDS=\"$wait_timeout_seconds\"\nfi\n\nwrapper_stdout=\"$out_dir/auth_wait_exchange.wrapper.stdout.txt\"\nwrapper_stderr=\"$out_dir/auth_wait_exchange.wrapper.stderr.txt\"\nauth_status_file=\"$out_dir/auth_bootstrap_status.json\"\nempty_auth_status_file=\"$out_dir/auth_bootstrap_status.empty.json\"\nbootstrap_exit_code=0\n\nif bash \"$tiktok_root/tiktok_wait_for_code.sh\" \"$state\" > \"$wrapper_stdout\" 2> \"$wrapper_stderr\"; then\n  code=\"$(tr -d '\\r\\n' < \"$out_dir/oauth_callback_code.txt\")\"\n  if bash \"$tiktok_root/tiktok_exchange_code.sh\" \"$code\" >> \"$wrapper_stdout\" 2>> \"$wrapper_stderr\"; then\n    bootstrap_exit_code=0\n  else\n    bootstrap_exit_code=$?\n  fi\nelse\n  bootstrap_exit_code=$?\nfi\n\nif [ -s \"$token_file\" ]; then\n  if bash \"$tiktok_root/tiktok_auth_status.sh\" > \"$auth_status_file\" 2>> \"$wrapper_stderr\"; then\n    :\n  else\n    printf '{}\\n' > \"$auth_status_file\"\n  fi\nelse\n  printf '{}\\n' > \"$auth_status_file\"\nfi\n\nif [ ! -s \"$auth_status_file\" ]; then\n  printf '{}\\n' > \"$empty_auth_status_file\"\n  auth_status_file=\"$empty_auth_status_file\"\nfi\n\nif command -v jq >/dev/null 2>&1; then\n  has_token=\"false\"\n  if [ -s \"$token_file\" ] && jq -e '.access_token' \"$token_file\" >/dev/null 2>&1; then\n    has_token=\"true\"\n  fi\n\n  jq -n \\\n    --argjson bootstrap_exit_code \"$bootstrap_exit_code\" \\\n    --argjson has_token \"$has_token\" \\\n    --arg token_file \"$token_file\" \\\n    --arg out_dir \"$out_dir\" \\\n    --arg auth_status_file \"$auth_status_file\" \\\n    --arg wrapper_stdout_file \"$wrapper_stdout\" \\\n    --arg wrapper_stderr_file \"$wrapper_stderr\" \\\n    --rawfile wrapper_stdout \"$wrapper_stdout\" \\\n    --rawfile wrapper_stderr \"$wrapper_stderr\" \\\n    --slurpfile auth_status \"$auth_status_file\" \\\n    '{\n      ok: (($bootstrap_exit_code == 0) and $has_token),\n      bootstrap_exit_code: $bootstrap_exit_code,\n      token_file: $token_file,\n      out_dir: $out_dir,\n      auth_status_file: $auth_status_file,\n      wrapper_stdout_file: $wrapper_stdout_file,\n      wrapper_stderr_file: $wrapper_stderr_file,\n      auth_status: ($auth_status[0] // {}),\n      stdout_preview: ($wrapper_stdout | split(\"\\n\") | map(select(length > 0)) | .[0:12] | join(\"\\n\")),\n      stderr_preview: ($wrapper_stderr | split(\"\\n\") | map(select(length > 0)) | .[0:12] | join(\"\\n\"))\n    }'\nelse\n  printf '{\"ok\":false,\"bootstrap_exit_code\":%s,\"token_file\":\"%s\",\"out_dir\":\"%s\",\"error\":\"jq not found\",\"wrapper_stdout_file\":\"%s\",\"wrapper_stderr_file\":\"%s\"}\\n' \\\n    \"$bootstrap_exit_code\" \\\n    \"$token_file\" \\\n    \"$out_dir\" \\\n    \"$wrapper_stdout\" \\\n    \"$wrapper_stderr\"\nfi\n\nexit 0",
+          "timeoutMs": 900000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "{\n  \"ok\": true,\n  \"bootstrap_exit_code\": 0,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"out_dir\": \".stitchly/secrets/tiktok\",\n  \"auth_status_file\": \".stitchly/secrets/tiktok/auth_bootstrap_status.json\",\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt\",\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 86400,\n    \"refresh_token_seconds_remaining\": 31536000\n  },\n  \"stdout_preview\": \"Waiting for OAuth code for state: 0fed089c55f2b49585ed6753cd49522b\\nPolling: https://threadback.vercel.app/api/code\\nReceived code: .stitchly/secrets/tiktok/oauth_callback_code.txt\\nSaved token file: .stitchly/secrets/tiktok/tiktok_tokens.json\\nSaved token env: .stitchly/secrets/tiktok/tiktok_tokens.env\",\n  \"stderr_preview\": \"\"\n}\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 30784,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-wait_and_exchange_auth-input-441465-293487539-ThreadId452.json",
+            "input_format": "jsonl",
+            "input_table": "make_auth_url",
+            "input_row_count": 1
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": true,
+      "dragging": false
+    },
+    {
+      "id": "parse_auth_bootstrap_result",
+      "type": "transform",
+      "position": {
+        "x": 900,
+        "y": 180
+      },
+      "data": {
+        "label": "Parse Auth Bootstrap Result",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", raw as (\n    select\n      trim(coalesce(stdout, '')) as stdout_json,\n      coalesce(stderr, '') as shell_stderr,\n      try_cast(exit_code as integer) as shell_exit_code,\n      try_cast(duration_ms as bigint) as shell_duration_ms\n    from input\n  ),\n  parsed as (\n    select\n      *,\n      try_cast(nullif(stdout_json, '') as json) as payload\n    from raw\n  )\n  select\n    current_timestamp as checked_at,\n    coalesce(try_cast(json_extract_string(payload, '$.ok') as boolean), false) as auth_bootstrap_ok,\n    coalesce(try_cast(json_extract_string(payload, '$.bootstrap_exit_code') as integer), -1) as bootstrap_exit_code,\n    shell_exit_code,\n    shell_duration_ms,\n    json_extract_string(payload, '$.token_file') as token_file,\n    json_extract_string(payload, '$.out_dir') as out_dir,\n    json_extract_string(payload, '$.auth_status_file') as auth_status_file,\n    try_cast(json_extract_string(payload, '$.auth_status.access_token_seconds_remaining') as bigint) as access_token_seconds_remaining,\n    try_cast(json_extract_string(payload, '$.auth_status.refresh_token_seconds_remaining') as bigint) as refresh_token_seconds_remaining,\n    coalesce(try_cast(json_extract_string(payload, '$.auth_status.has_access_token') as boolean), false) as has_access_token,\n    coalesce(try_cast(json_extract_string(payload, '$.auth_status.has_refresh_token') as boolean), false) as has_refresh_token,\n    coalesce(try_cast(json_extract_string(payload, '$.auth_status.open_id_present') as boolean), false) as open_id_present,\n    json_extract_string(payload, '$.wrapper_stdout_file') as wrapper_stdout_file,\n    json_extract_string(payload, '$.wrapper_stderr_file') as wrapper_stderr_file,\n    json_extract_string(payload, '$.stdout_preview') as stdout_preview,\n    json_extract_string(payload, '$.stderr_preview') as stderr_preview,\n    payload is not null as parsed_ok,\n    case\n      when payload is null then 'parse_failed'\n      when coalesce(try_cast(json_extract_string(payload, '$.ok') as boolean), false) then 'ok'\n      else 'auth_bootstrap_failed'\n    end as auth_bootstrap_status,\n    stdout_json as raw_stdout,\n    shell_stderr as raw_stderr\n  from parsed",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "checked_at",
+            "type": "timestamp",
+            "nullable": true
+          },
+          {
+            "name": "auth_bootstrap_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "bootstrap_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "token_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "out_dir",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "auth_status_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "access_token_seconds_remaining",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "refresh_token_seconds_remaining",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "has_access_token",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "has_refresh_token",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "open_id_present",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "wrapper_stdout_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "wrapper_stderr_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stdout_preview",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr_preview",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "auth_bootstrap_status",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "checked_at": "2026-06-24 23:20:57.937+02",
+            "auth_bootstrap_ok": true,
+            "bootstrap_exit_code": 0,
+            "shell_exit_code": 0,
+            "shell_duration_ms": 30784,
+            "token_file": ".stitchly/secrets/tiktok/tiktok_tokens.json",
+            "out_dir": ".stitchly/secrets/tiktok",
+            "auth_status_file": ".stitchly/secrets/tiktok/auth_bootstrap_status.json",
+            "access_token_seconds_remaining": 86400,
+            "refresh_token_seconds_remaining": 31536000,
+            "has_access_token": true,
+            "has_refresh_token": true,
+            "open_id_present": true,
+            "wrapper_stdout_file": ".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt",
+            "wrapper_stderr_file": ".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt",
+            "stdout_preview": "Waiting for OAuth code for state: 0fed089c55f2b49585ed6753cd49522b\nPolling: https://threadback.vercel.app/api/code\nReceived code: .stitchly/secrets/tiktok/oauth_callback_code.txt\nSaved token file: .stitchly/secrets/tiktok/tiktok_tokens.json\nSaved token env: .stitchly/secrets/tiktok/tiktok_tokens.env",
+            "stderr_preview": "",
+            "parsed_ok": true,
+            "auth_bootstrap_status": "ok",
+            "raw_stdout": "{\n  \"ok\": true,\n  \"bootstrap_exit_code\": 0,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"out_dir\": \".stitchly/secrets/tiktok\",\n  \"auth_status_file\": \".stitchly/secrets/tiktok/auth_bootstrap_status.json\",\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt\",\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 86400,\n    \"refresh_token_seconds_remaining\": 31536000\n  },\n  \"stdout_preview\": \"Waiting for OAuth code for state: 0fed089c55f2b49585ed6753cd49522b\\nPolling: https://threadback.vercel.app/api/code\\nReceived code: .stitchly/secrets/tiktok/oauth_callback_code.txt\\nSaved token file: .stitchly/secrets/tiktok/tiktok_tokens.json\\nSaved token env: .stitchly/secrets/tiktok/tiktok_tokens.env\",\n  \"stderr_preview\": \"\"\n}\n",
+            "raw_stderr": ""
+          }
+        ]
+      },
+      "measured": {
+        "width": 241,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "log_auth_bootstrap_result",
+      "type": "transform",
+      "position": {
+        "x": 1212.7710786836374,
+        "y": -31.982443489593315
+      },
+      "data": {
+        "label": "Log Auth Bootstrap Result",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\ncsv_value() {\n  tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n}\n\ninput_value() {\n  col=\"$1\"\n  \"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \"select coalesce(cast(\\\"${col}\\\" as varchar), '') from \\\"$DUCKLE_INPUT_TABLE\\\" limit 1\" | csv_value\n}\n\nstatus=\"$(input_value auth_bootstrap_status)\"\nok=\"$(input_value auth_bootstrap_ok)\"\nexit_code=\"$(input_value bootstrap_exit_code)\"\ntoken_file=\"$(input_value token_file)\"\naccess_remaining=\"$(input_value access_token_seconds_remaining)\"\nrefresh_remaining=\"$(input_value refresh_token_seconds_remaining)\"\nstdout_preview=\"$(input_value stdout_preview)\"\nstderr_preview=\"$(input_value stderr_preview)\"\n\nif [ \"$ok\" = \"true\" ]; then\n  printf 'TikTok auth bootstrap OK: token_file=%s access_token_seconds_remaining=%s refresh_token_seconds_remaining=%s\\n' \\\n    \"$token_file\" \\\n    \"${access_remaining:-unknown}\" \\\n    \"${refresh_remaining:-unknown}\"\nelse\n  printf 'TikTok auth bootstrap FAILED: status=%s exit_code=%s token_file=%s\\n' \\\n    \"${status:-unknown}\" \\\n    \"${exit_code:-unknown}\" \\\n    \"$token_file\"\n  if [ -n \"$stdout_preview\" ]; then\n    printf 'stdout_preview:\\n%s\\n' \"$stdout_preview\"\n  fi\n  if [ -n \"$stderr_preview\" ]; then\n    printf 'stderr_preview:\\n%s\\n' \"$stderr_preview\"\n  fi\nfi\n\nexit 0",
+          "timeoutMs": 30000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "TikTok auth bootstrap OK: token_file=.stitchly/secrets/tiktok/tiktok_tokens.json access_token_seconds_remaining=86400 refresh_token_seconds_remaining=31536000\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 2326,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-log_auth_bootstrap_result-input-441465-851426251-ThreadId452.json",
+            "input_format": "jsonl",
+            "input_table": "parse_auth_bootstrap_result",
+            "input_row_count": 1
+          }
+        ]
+      },
+      "measured": {
+        "width": 228,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "write_auth_bootstrap_parquet",
+      "type": "sink",
+      "position": {
+        "x": 1200,
+        "y": 180
+      },
+      "data": {
+        "label": "Write Auth Bootstrap Parquet",
+        "componentId": "snk.parquet",
+        "properties": {
+          "path": "artifacts/tiktok/auth_bootstrap/data.parquet",
+          "compression": "ZSTD",
+          "rowGroupSize": 100000
+        }
+      },
+      "measured": {
+        "width": 249,
+        "height": 170
+      },
+      "selected": false,
+      "dragging": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_auth_config_make_auth_url",
+      "source": "auth_config",
+      "sourceHandle": "main",
+      "target": "make_auth_url",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      },
+      "selected": false
+    },
+    {
+      "id": "e_make_auth_url_wait_and_exchange_auth",
+      "source": "make_auth_url",
+      "sourceHandle": "main",
+      "target": "wait_and_exchange_auth",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_wait_and_exchange_auth_parse_auth_bootstrap_result",
+      "source": "wait_and_exchange_auth",
+      "sourceHandle": "main",
+      "target": "parse_auth_bootstrap_result",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_parse_auth_bootstrap_result_log_auth_bootstrap_result",
+      "source": "parse_auth_bootstrap_result",
+      "sourceHandle": "main",
+      "target": "log_auth_bootstrap_result",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_parse_auth_bootstrap_result_write_auth_bootstrap_parquet",
+      "source": "parse_auth_bootstrap_result",
+      "sourceHandle": "main",
+      "target": "write_auth_bootstrap_parquet",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    }
+  ]
+}
