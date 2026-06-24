@@ -1,0 +1,463 @@
+{
+  "nodes": [
+    {
+      "id": "auth_config",
+      "type": "source",
+      "position": {
+        "x": 0,
+        "y": 180
+      },
+      "data": {
+        "label": "Auth Config",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": "  select\n    '../docs/tiktok' as tiktok_root,\n    '../docs/tiktok/.env.tiktok' as env_file,\n    '../docs/tiktok/out/tiktok_tokens.json' as token_file,\n    '../docs/tiktok/out' as out_dir,\n    'artifacts/tiktok/auth_probe/data.parquet' as artifact_path;",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "tiktok_root",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "env_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "token_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "out_dir",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "artifact_path",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "tiktok_root": "../docs/tiktok",
+            "env_file": "../docs/tiktok/.env.tiktok",
+            "token_file": "../docs/tiktok/out/tiktok_tokens.json",
+            "out_dir": "../docs/tiktok/out",
+            "artifact_path": "artifacts/tiktok/auth_probe/data.parquet"
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "run_auth_probe",
+      "type": "transform",
+      "position": {
+        "x": 300,
+        "y": 180
+      },
+      "data": {
+        "label": "Run Auth Probe",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nworkspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\ncsv_value() {\n  tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n}\n\ninput_value() {\n  col=\"$1\"\n  \"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \"select coalesce(cast(\\\"${col}\\\" as varchar), '') from \\\"$DUCKLE_INPUT_TABLE\\\" limit 1\" | csv_value\n}\n\ncd \"$workspace\"\n\ntiktok_root=\"$(input_value tiktok_root)\"\nenv_file=\"$(input_value env_file)\"\ntoken_file=\"$(input_value token_file)\"\nout_dir=\"$(input_value out_dir)\"\n\nif [ -z \"$tiktok_root\" ]; then\n  echo \"run_auth_probe: tiktok_root is required\" >&2\n  exit 1\nfi\n\nmkdir -p \"$out_dir\"\n\nexport TIKTOK_ENV_FILE=\"$env_file\"\nexport TIKTOK_OUT_DIR=\"$out_dir\"\nexport TIKTOK_TOKEN_FILE=\"$token_file\"\n\nwrapper_stdout=\"$out_dir/auth_probe.wrapper.stdout.txt\"\nwrapper_stderr=\"$out_dir/auth_probe.wrapper.stderr.txt\"\nreport_path=\"$out_dir/auth_probe_report.json\"\nprobe_script_exit_code=0\n\nif bash \"$tiktok_root/tiktok_auth_probe.sh\" > \"$wrapper_stdout\" 2> \"$wrapper_stderr\"; then\n  probe_script_exit_code=0\nelse\n  probe_script_exit_code=$?\nfi\n\nif [ -s \"$report_path\" ] && command -v jq >/dev/null 2>&1; then\n  jq \\\n    --argjson probe_script_exit_code \"$probe_script_exit_code\" \\\n    --arg wrapper_stdout_file \"$wrapper_stdout\" \\\n    --arg wrapper_stderr_file \"$wrapper_stderr\" \\\n    '. + {\n      probe_script_exit_code: $probe_script_exit_code,\n      wrapper_stdout_file: $wrapper_stdout_file,\n      wrapper_stderr_file: $wrapper_stderr_file\n    }' \\\n    \"$report_path\"\nelse\n  printf '{\"ok\":false,\"probe_script_exit_code\":%s,\"token_file\":\"%s\",\"error\":\"probe did not produce report\",\"wrapper_stdout_file\":\"%s\",\"wrapper_stderr_file\":\"%s\"}\\n' \\\n    \"$probe_script_exit_code\" \\\n    \"$token_file\" \\\n    \"$wrapper_stdout\" \\\n    \"$wrapper_stderr\"\nfi\n\nexit 0",
+          "timeoutMs": 300000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "{\"ok\":false,\"probe_script_exit_code\":1,\"token_file\":\"../docs/tiktok/out/tiktok_tokens.json\",\"error\":\"probe did not produce report\",\"wrapper_stdout_file\":\"../docs/tiktok/out/auth_probe.wrapper.stdout.txt\",\"wrapper_stderr_file\":\"../docs/tiktok/out/auth_probe.wrapper.stderr.txt\"}\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 3077,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-run_auth_probe-input-441465-943775623-ThreadId197.json",
+            "input_format": "jsonl",
+            "input_table": "auth_config",
+            "input_row_count": 1
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "parse_auth_probe_report",
+      "type": "transform",
+      "position": {
+        "x": 600,
+        "y": 180
+      },
+      "data": {
+        "label": "Parse Auth Probe Report",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", raw as (\n    select\n      trim(coalesce(stdout, '')) as stdout_json,\n      coalesce(stderr, '') as shell_stderr,\n      try_cast(exit_code as integer) as shell_exit_code,\n      try_cast(duration_ms as bigint) as shell_duration_ms\n    from input\n  ),\n  parsed as (\n    select\n      *,\n      try_cast(nullif(stdout_json, '') as json) as payload\n    from raw\n  )\n  select\n    current_timestamp as checked_at,\n    coalesce(try_cast(json_extract_string(payload, '$.ok') as boolean), false) as auth_probe_ok,\n    coalesce(try_cast(json_extract_string(payload, '$.probe_script_exit_code') as integer), -1) as probe_script_exit_code,\n    shell_exit_code,\n    shell_duration_ms,\n    json_extract_string(payload, '$.token_file') as token_file,\n    try_cast(json_extract_string(payload, '$.auth_status.access_token_seconds_remaining') as bigint) as access_token_seconds_remaining,\n    try_cast(json_extract_string(payload, '$.auth_status.refresh_token_seconds_remaining') as bigint) as refresh_token_seconds_remaining,\n    coalesce(try_cast(json_extract_string(payload, '$.auth_status.has_access_token') as boolean), false) as has_access_token,\n    coalesce(try_cast(json_extract_string(payload, '$.auth_status.has_refresh_token') as boolean), false) as has_refresh_token,\n    coalesce(try_cast(json_extract_string(payload, '$.user_info_summary.ok') as boolean), false) as user_info_ok,\n    coalesce(try_cast(json_extract_string(payload, '$.user_info_summary.open_id_present') as boolean), false) as open_id_present,\n    coalesce(try_cast(json_extract_string(payload, '$.video_list_summary.ok') as boolean), false) as video_list_ok,\n    coalesce(try_cast(json_extract_string(payload, '$.video_list_summary.video_count') as bigint), 0) as video_count,\n    json_extract_string(payload, '$.video_list_summary.error.code') as video_error_code,\n    json_extract_string(payload, '$.video_list_summary.error.message') as video_error_message,\n    json_extract_string(payload, '$.artifacts.auth_status') as auth_status_artifact,\n    json_extract_string(payload, '$.artifacts.user_info') as user_info_artifact,\n    json_extract_string(payload, '$.artifacts.video_list') as video_list_artifact,\n    json_extract_string(payload, '$.wrapper_stdout_file') as wrapper_stdout_file,\n    json_extract_string(payload, '$.wrapper_stderr_file') as wrapper_stderr_file,\n    payload is not null as parsed_ok,\n    case\n      when payload is null then 'parse_failed'\n      when coalesce(try_cast(json_extract_string(payload, '$.ok') as boolean), false) then 'ok'\n      else 'auth_probe_failed'\n    end as auth_probe_status,\n    stdout_json as raw_stdout,\n    shell_stderr as raw_stderr\n  from parsed",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "checked_at",
+            "type": "timestamp",
+            "nullable": true
+          },
+          {
+            "name": "auth_probe_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "probe_script_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "token_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "access_token_seconds_remaining",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "refresh_token_seconds_remaining",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "has_access_token",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "has_refresh_token",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "user_info_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "open_id_present",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "video_list_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "video_count",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "video_error_code",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "video_error_message",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "auth_status_artifact",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "user_info_artifact",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "video_list_artifact",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "wrapper_stdout_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "wrapper_stderr_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "auth_probe_status",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "checked_at": "2026-06-24 22:27:29.719+02",
+            "auth_probe_ok": false,
+            "probe_script_exit_code": 1,
+            "shell_exit_code": 0,
+            "shell_duration_ms": 3077,
+            "token_file": "../docs/tiktok/out/tiktok_tokens.json",
+            "access_token_seconds_remaining": null,
+            "refresh_token_seconds_remaining": null,
+            "has_access_token": false,
+            "has_refresh_token": false,
+            "user_info_ok": false,
+            "open_id_present": false,
+            "video_list_ok": false,
+            "video_count": 0,
+            "video_error_code": null,
+            "video_error_message": null,
+            "auth_status_artifact": null,
+            "user_info_artifact": null,
+            "video_list_artifact": null,
+            "wrapper_stdout_file": "../docs/tiktok/out/auth_probe.wrapper.stdout.txt",
+            "wrapper_stderr_file": "../docs/tiktok/out/auth_probe.wrapper.stderr.txt",
+            "parsed_ok": true,
+            "auth_probe_status": "auth_probe_failed",
+            "raw_stdout": "{\"ok\":false,\"probe_script_exit_code\":1,\"token_file\":\"../docs/tiktok/out/tiktok_tokens.json\",\"error\":\"probe did not produce report\",\"wrapper_stdout_file\":\"../docs/tiktok/out/auth_probe.wrapper.stdout.txt\",\"wrapper_stderr_file\":\"../docs/tiktok/out/auth_probe.wrapper.stderr.txt\"}\n",
+            "raw_stderr": ""
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "log_auth_result",
+      "type": "transform",
+      "position": {
+        "x": 904.1488373405776,
+        "y": -23.26976944380567
+      },
+      "data": {
+        "label": "Log Auth Result",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\ncsv_value() {\n  tail -n +2 | tr -d '\\r' | sed 's/^\"//; s/\"$//'\n}\n\ninput_value() {\n  col=\"$1\"\n  \"$duckdb_bin\" -csv \"$DUCKLE_DUCKDB_DATABASE\" -c \"select coalesce(cast(\\\"${col}\\\" as varchar), '') from \\\"$DUCKLE_INPUT_TABLE\\\" limit 1\" | csv_value\n}\n\nauth_probe_status=\"$(input_value auth_probe_status)\"\nauth_probe_ok=\"$(input_value auth_probe_ok)\"\nuser_info_ok=\"$(input_value user_info_ok)\"\nvideo_list_ok=\"$(input_value video_list_ok)\"\nvideo_count=\"$(input_value video_count)\"\naccess_remaining=\"$(input_value access_token_seconds_remaining)\"\nrefresh_remaining=\"$(input_value refresh_token_seconds_remaining)\"\nvideo_error_code=\"$(input_value video_error_code)\"\nvideo_error_message=\"$(input_value video_error_message)\"\n\nif [ \"$auth_probe_ok\" = \"true\" ]; then\n  printf 'TikTok auth probe OK: user_info=%s video_list=%s videos=%s access_token_seconds_remaining=%s refresh_token_seconds_remaining=%s\\n' \\\n    \"$user_info_ok\" \\\n    \"$video_list_ok\" \\\n    \"${video_count:-0}\" \\\n    \"${access_remaining:-unknown}\" \\\n    \"${refresh_remaining:-unknown}\"\nelse\n  printf 'TikTok auth probe FAILED: status=%s user_info=%s video_list=%s videos=%s access_token_seconds_remaining=%s refresh_token_seconds_remaining=%s' \\\n    \"${auth_probe_status:-unknown}\" \\\n    \"$user_info_ok\" \\\n    \"$video_list_ok\" \\\n    \"${video_count:-0}\" \\\n    \"${access_remaining:-unknown}\" \\\n    \"${refresh_remaining:-unknown}\"\n  if [ -n \"$video_error_code\" ] || [ -n \"$video_error_message\" ]; then\n    printf ' video_error_code=%s video_error_message=%s' \"$video_error_code\" \"$video_error_message\"\n  fi\n  printf '\\n'\nfi\n\nexit 0",
+          "timeoutMs": 30000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "TikTok auth probe FAILED: status=auth_probe_failed user_info=false video_list=false videos=0 access_token_seconds_remaining=unknown refresh_token_seconds_remaining=unknown\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 6006,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-log_auth_result-input-441465-614362654-ThreadId197.json",
+            "input_format": "jsonl",
+            "input_table": "parse_auth_probe_report",
+            "input_row_count": 1
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": true,
+      "dragging": false
+    },
+    {
+      "id": "write_auth_probe_parquet",
+      "type": "sink",
+      "position": {
+        "x": 900,
+        "y": 180
+      },
+      "data": {
+        "label": "Write Auth Probe Parquet",
+        "componentId": "snk.parquet",
+        "properties": {
+          "path": "artifacts/tiktok/auth_probe/data.parquet",
+          "compression": "ZSTD",
+          "rowGroupSize": 100000
+        }
+      },
+      "measured": {
+        "width": 223,
+        "height": 170
+      },
+      "selected": false,
+      "dragging": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_auth_config_run_auth_probe",
+      "source": "auth_config",
+      "sourceHandle": "main",
+      "target": "run_auth_probe",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_run_auth_probe_parse_auth_probe_report",
+      "source": "run_auth_probe",
+      "sourceHandle": "main",
+      "target": "parse_auth_probe_report",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_parse_auth_probe_report_log_auth_result",
+      "source": "parse_auth_probe_report",
+      "sourceHandle": "main",
+      "target": "log_auth_result",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_parse_auth_probe_report_write_auth_probe_parquet",
+      "source": "parse_auth_probe_report",
+      "sourceHandle": "main",
+      "target": "write_auth_probe_parquet",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    }
+  ]
+}
