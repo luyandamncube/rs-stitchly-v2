@@ -16,6 +16,13 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
+if [ -z "${TIKTOK_AUTH_CODE:-}" ] && [ -f "$OUT_DIR/oauth_callback.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$OUT_DIR/oauth_callback.env"
+  set +a
+fi
+
 missing=0
 for key in TIKTOK_CLIENT_KEY TIKTOK_CLIENT_SECRET TIKTOK_AUTH_CODE TIKTOK_REDIRECT_URI; do
   eval "value=\${$key:-}"
@@ -24,6 +31,17 @@ for key in TIKTOK_CLIENT_KEY TIKTOK_CLIENT_SECRET TIKTOK_AUTH_CODE TIKTOK_REDIRE
     missing=1
   fi
 done
+
+mode="${TIKTOK_OAUTH_MODE:-web}"
+code_verifier="${TIKTOK_CODE_VERIFIER:-}"
+if [ "$mode" = "desktop" ] && [ -z "$code_verifier" ] && [ -f "$OUT_DIR/oauth_code_verifier.txt" ]; then
+  code_verifier="$(tr -d '\r\n' < "$OUT_DIR/oauth_code_verifier.txt")"
+fi
+
+if [ "$mode" = "desktop" ] && [ -z "$code_verifier" ]; then
+  echo "missing TIKTOK_CODE_VERIFIER for desktop OAuth; rerun oauth_start.sh or set it in $ENV_FILE" >&2
+  missing=1
+fi
 
 if [ "$missing" -ne 0 ]; then
   exit 1
@@ -46,16 +64,24 @@ print(unquote(sys.argv[1]))
 PY
 )"
 
-curl -sS -L \
-  --request POST "https://open.tiktokapis.com/v2/oauth/token/" \
-  --header "Content-Type: application/x-www-form-urlencoded" \
-  --header "Cache-Control: no-cache" \
-  --data-urlencode "client_key=${TIKTOK_CLIENT_KEY}" \
-  --data-urlencode "client_secret=${TIKTOK_CLIENT_SECRET}" \
-  --data-urlencode "code=${code}" \
-  --data-urlencode "grant_type=authorization_code" \
-  --data-urlencode "redirect_uri=${TIKTOK_REDIRECT_URI}" \
+curl_args=(
+  -sS -L
+  --request POST "https://open.tiktokapis.com/v2/oauth/token/"
+  --header "Content-Type: application/x-www-form-urlencoded"
+  --header "Cache-Control: no-cache"
+  --data-urlencode "client_key=${TIKTOK_CLIENT_KEY}"
+  --data-urlencode "client_secret=${TIKTOK_CLIENT_SECRET}"
+  --data-urlencode "code=${code}"
+  --data-urlencode "grant_type=authorization_code"
+  --data-urlencode "redirect_uri=${TIKTOK_REDIRECT_URI}"
   -o "$RESPONSE"
+)
+
+if [ "$mode" = "desktop" ]; then
+  curl_args+=(--data-urlencode "code_verifier=${code_verifier}")
+fi
+
+curl "${curl_args[@]}"
 
 python3 - "$RESPONSE" "$TOKENS_ENV" <<'PY'
 import json

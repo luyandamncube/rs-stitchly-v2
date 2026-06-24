@@ -30,14 +30,23 @@ Fill these values in `tests/tiktok/.env`:
 ```bash
 TIKTOK_CLIENT_KEY=
 TIKTOK_CLIENT_SECRET=
-TIKTOK_REDIRECT_URI=https://example.com/tiktok/callback
+TIKTOK_OAUTH_MODE=desktop
+TIKTOK_REDIRECT_URI=http://localhost:3455/callback/
 TIKTOK_SCOPES=user.info.basic,video.list
 ```
 
-`TIKTOK_REDIRECT_URI` must exactly match a redirect URI configured in the
-TikTok developer app's Login Kit product. TikTok's Web Login docs require HTTPS
-redirect URIs for web apps, so use your configured HTTPS callback or a temporary
-HTTPS tunnel if needed.
+`TIKTOK_REDIRECT_URI` must exactly match a redirect URI configured in the TikTok
+developer app's Login Kit product under the matching Web/Desktop platform
+configuration.
+
+Recommended local setup is Desktop Login Kit:
+
+```text
+http://localhost:3455/callback/
+```
+
+Desktop Login Kit uses PKCE. `oauth_start.sh` generates the verifier/challenge
+and stores the verifier under `tests/tiktok/out/oauth_code_verifier.txt`.
 
 Generate the authorization URL:
 
@@ -45,8 +54,21 @@ Generate the authorization URL:
 bash tests/tiktok/oauth_start.sh
 ```
 
-Open the printed URL in a browser. After approval, TikTok redirects to your
-callback URL with a `code=...` query parameter. Copy that code into `.env`:
+Optionally start the local callback catcher before opening the URL:
+
+```bash
+python3 tests/tiktok/oauth_callback_server.py
+```
+
+Open the printed URL in a browser. After approval, TikTok redirects to
+`/callback/` with a `code=...` query parameter. The callback catcher writes:
+
+```text
+tests/tiktok/out/oauth_callback.env
+```
+
+If the callback catcher is not running, copy the `code` from the browser address
+bar into `.env`:
 
 ```bash
 TIKTOK_AUTH_CODE=...
