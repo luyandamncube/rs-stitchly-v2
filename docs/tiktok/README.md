@@ -14,6 +14,16 @@ TikTok Login Kit
 -> local user/video API probes
 ```
 
+The same flow is also available as Stitchly workflows:
+
+```text
+tiktok_auth_bootstrap
+tiktok_auth_probe
+```
+
+The current mechanism review for TikTok video archive/download options lives in
+`docs/tiktok/video_download_mechanisms.md`.
+
 The primary scripts are shell scripts using `bash`, `curl`, and `jq`. Python
 equivalents are also kept in the same folder as reference/fallback utilities.
 
@@ -93,6 +103,18 @@ Run the full auth probe:
 bash docs/tiktok/tiktok_auth_probe.sh
 ```
 
+Probe or download a single TikTok video URL with `yt-dlp`:
+
+```bash
+bash docs/tiktok/tiktok_download_video.sh 'https://www.tiktok.com/@example/video/1234567890123456789'
+ENABLE_MEDIA_DOWNLOAD=true bash docs/tiktok/tiktok_download_video.sh 'https://www.tiktok.com/@example/video/1234567890123456789'
+```
+
+The first command is metadata-only. The second command downloads media into
+`docs/tiktok/out/downloads/` when the URL is permitted and `yt-dlp` can resolve
+it. Downloads default to an H.264 MP4 format for broad player compatibility.
+Override the selector with `TIKTOK_YTDLP_FORMAT` if needed.
+
 Outputs are written under:
 
 ```text
@@ -118,6 +140,13 @@ docs/tiktok/out/auth_probe_report.json
 docs/tiktok/out/auth_probe_report.md
 ```
 
+Single video download manifest:
+
+```text
+docs/tiktok/out/tiktok_download_manifest.jsonl
+docs/tiktok/out/downloads/
+```
+
 You can source this snippet after token exchange if you want token values in
 your shell:
 
@@ -127,9 +156,10 @@ source docs/tiktok/out/tiktok_tokens.env
 
 ## Stitchly Workflow Fit
 
-The first Stitchly auth test workflow should call these scripts from shell nodes
-after tokens exist. OAuth login itself remains outside the workflow because it
-requires browser/user interaction.
+The current Stitchly auth test workflows call these scripts from shell nodes.
+The bootstrap workflow still requires browser/user interaction, but the callback
+code is captured through the deployed Vercel postbox instead of manual
+copy/paste.
 
 Suggested workflow:
 

@@ -1,0 +1,560 @@
+{
+  "nodes": [
+    {
+      "id": "video_download_config",
+      "type": "source",
+      "position": {
+        "x": 0,
+        "y": 180
+      },
+      "data": {
+        "label": "Video Download Config",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": "  select\n    video_url,\n    true as enable_media_download,\n    '../docs/tiktok' as tiktok_root,\n    '../docs/tiktok/.env.tiktok' as env_file,\n    'artifacts/tiktok/video_downloads' as download_out_dir,\n    'artifacts/tiktok/video_downloads/tiktok_download_manifest.jsonl' as manifest_file,\n    'artifacts/tiktok/video_download_manifest/data.parquet' as artifact_path\n  from (\n    values\n      ('https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260'),\n      ('https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646')\n  ) as urls(video_url);",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "video_url",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "enable_media_download",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "tiktok_root",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "env_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "download_out_dir",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "manifest_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "artifact_path",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "video_url": "https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260",
+            "enable_media_download": true,
+            "tiktok_root": "../docs/tiktok",
+            "env_file": "../docs/tiktok/.env.tiktok",
+            "download_out_dir": "artifacts/tiktok/video_downloads",
+            "manifest_file": "artifacts/tiktok/video_downloads/tiktok_download_manifest.jsonl",
+            "artifact_path": "artifacts/tiktok/video_download_manifest/data.parquet"
+          },
+          {
+            "video_url": "https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646",
+            "enable_media_download": true,
+            "tiktok_root": "../docs/tiktok",
+            "env_file": "../docs/tiktok/.env.tiktok",
+            "download_out_dir": "artifacts/tiktok/video_downloads",
+            "manifest_file": "artifacts/tiktok/video_downloads/tiktok_download_manifest.jsonl",
+            "artifact_path": "artifacts/tiktok/video_download_manifest/data.parquet"
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "download_tiktok_video",
+      "type": "transform",
+      "position": {
+        "x": 330,
+        "y": 180
+      },
+      "data": {
+        "label": "Download TikTok Video",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nworkspace=\"${DUCKLE_WORKSPACE:-$PWD}\"\ninput_path=\"${DUCKLE_INPUT_PATH:-}\"\n\ncd \"$workspace\"\n\nif [ -z \"$input_path\" ] || [ ! -f \"$input_path\" ]; then\n  echo \"download_tiktok_video: DUCKLE_INPUT_PATH is required\" >&2\n  exit 1\nfi\n\nif ! command -v jq >/dev/null 2>&1; then\n  echo \"download_tiktok_video: jq is required\" >&2\n  exit 1\nfi\n\nrow_count=0\nwhile IFS= read -r row_json || [ -n \"$row_json\" ]; do\n  [ -n \"$row_json\" ] || continue\n\n  video_url=\"$(printf '%s' \"$row_json\" | jq -r '.video_url // \"\"')\"\n  enable_media_download=\"$(printf '%s' \"$row_json\" | jq -r '.enable_media_download // false')\"\n  tiktok_root=\"$(printf '%s' \"$row_json\" | jq -r '.tiktok_root // \"../docs/tiktok\"')\"\n  env_file=\"$(printf '%s' \"$row_json\" | jq -r '.env_file // \"../docs/tiktok/.env.tiktok\"')\"\n  download_out_dir=\"$(printf '%s' \"$row_json\" | jq -r '.download_out_dir // \"artifacts/tiktok/video_downloads\"')\"\n  manifest_file=\"$(printf '%s' \"$row_json\" | jq -r '.manifest_file // \"artifacts/tiktok/video_downloads/tiktok_download_manifest.jsonl\"')\"\n\n  if [ -z \"$video_url\" ]; then\n    echo \"download_tiktok_video: skipped row with empty video_url\" >&2\n    continue\n  fi\n\n  mkdir -p \"$download_out_dir\" \"$(dirname \"$manifest_file\")\"\n\n  export TIKTOK_ENV_FILE=\"$env_file\"\n  export TIKTOK_OUT_DIR=\"$download_out_dir\"\n  export TIKTOK_DOWNLOAD_OUT_DIR=\"$download_out_dir\"\n  export TIKTOK_DOWNLOAD_MANIFEST_FILE=\"$manifest_file\"\n  if [ \"$enable_media_download\" = \"true\" ] || [ \"$enable_media_download\" = \"1\" ]; then\n    export ENABLE_MEDIA_DOWNLOAD=\"true\"\n  else\n    export ENABLE_MEDIA_DOWNLOAD=\"false\"\n  fi\n\n  bash \"$tiktok_root/tiktok_download_video.sh\" \"$video_url\"\n  row_count=$((row_count + 1))\ndone < \"$input_path\"\n\nif [ \"$row_count\" -eq 0 ]; then\n  echo \"download_tiktok_video: no video_url rows were processed\" >&2\n  exit 1\nfi\n\nexit 0",
+          "timeoutMs": 300000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "{\"ok\":true,\"status\":\"downloaded\",\"download_enabled\":true,\"video_url\":\"https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260\",\"webpage_url\":\"https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260\",\"video_id\":\"7650018533669162260\",\"title\":\"No notes. Cosy modern farmhouse inspired ensuite. @McDonald Jones San...\",\"uploader\":\"mychoicedesignstudio\",\"duration\":17,\"metadata_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/metadata.json\",\"media_file\":\"/home/mncubel/rs-stitchly-v2/stitchly_workspace/artifacts/tiktok/video_downloads/7650018533669162260/7650018533669162260.mp4\",\"info_json_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/7650018533669162260.info.json\",\"run_dir\":\"artifacts/tiktok/video_downloads/7650018533669162260\",\"ytdlp_format\":\"best[vcodec^=h264][ext=mp4]/best[vcodec!=none][ext=mp4]/best\",\"selected_format_id\":\"h264_540p_456399-1\",\"media_vcodec\":\"h264\",\"media_acodec\":\"aac\",\"media_width\":576,\"media_height\":1024,\"download_exit_code\":0,\"download_stdout_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/download.stdout.txt\",\"download_stderr_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/download.stderr.txt\",\"stderr_preview\":\"WARNING: [TikTok] The extractor is attempting impersonation, but no impersonate target is available. If you encounter errors, then see  https://github.com/yt-dlp/yt-dlp#impersonation  for information on installing the required dependencies \",\"generated_at_epoch\":1782392561}\n{\"ok\":true,\"status\":\"downloaded\",\"download_enabled\":true,\"video_url\":\"https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646\",\"webpage_url\":\"https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646\",\"video_id\":\"7639630310463802646\",\"title\":\"#onthisday \",\"uploader\":\"crystalkitchenandbedroom\",\"duration\":18,\"metadata_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/metadata.json\",\"media_file\":\"/home/mncubel/rs-stitchly-v2/stitchly_workspace/artifacts/tiktok/video_downloads/7639630310463802646/7639630310463802646.mp4\",\"info_json_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/7639630310463802646.info.json\",\"run_dir\":\"artifacts/tiktok/video_downloads/7639630310463802646\",\"ytdlp_format\":\"best[vcodec^=h264][ext=mp4]/best[vcodec!=none][ext=mp4]/best\",\"selected_format_id\":\"h264_540p_486444-1\",\"media_vcodec\":\"h264\",\"media_acodec\":\"aac\",\"media_width\":576,\"media_height\":1024,\"download_exit_code\":0,\"download_stdout_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/download.stdout.txt\",\"download_stderr_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/download.stderr.txt\",\"stderr_preview\":\"WARNING: [TikTok] The extractor is attempting impersonation, but no impersonate target is available. If you encounter errors, then see  https://github.com/yt-dlp/yt-dlp#impersonation  for information on installing the required dependencies \",\"generated_at_epoch\":1782392567}\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 14219,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-download_tiktok_video-input-441465-98108067-ThreadId785.json",
+            "input_format": "jsonl",
+            "input_table": "video_download_config",
+            "input_row_count": 2
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "parse_download_result",
+      "type": "transform",
+      "position": {
+        "x": 660,
+        "y": 180
+      },
+      "data": {
+        "label": "Parse Download Result",
+        "componentId": "code.sql",
+        "properties": {
+          "sql": ", raw as (\n    select\n      trim(coalesce(stdout, '')) as stdout_text,\n      coalesce(stderr, '') as shell_stderr,\n      try_cast(exit_code as integer) as shell_exit_code,\n      try_cast(duration_ms as bigint) as shell_duration_ms\n    from input\n  ),\n  lines as (\n    select\n      row_number() over () as result_row_number,\n      trim(line) as stdout_json,\n      shell_stderr,\n      shell_exit_code,\n      shell_duration_ms,\n      false as synthetic_error\n    from raw,\n      unnest(string_split(stdout_text, chr(10))) as t(line)\n    where trim(line) <> ''\n\n    union all\n\n    select\n      1 as result_row_number,\n      '' as stdout_json,\n      shell_stderr,\n      shell_exit_code,\n      shell_duration_ms,\n      true as synthetic_error\n    from raw\n    where stdout_text = ''\n      and coalesce(shell_exit_code, -1) <> 0\n  ),\n  parsed as (\n    select\n      *,\n      case\n        when synthetic_error then null\n        else try_cast(nullif(stdout_json, '') as json)\n      end as payload\n    from lines\n  )\n  select\n    current_timestamp as checked_at,\n    result_row_number,\n    coalesce(try_cast(json_extract_string(payload, '$.ok') as boolean), false) as download_ok,\n    json_extract_string(payload, '$.status') as download_status,\n    coalesce(try_cast(json_extract_string(payload, '$.download_enabled') as boolean), false) as download_enabled,\n    json_extract_string(payload, '$.video_url') as video_url,\n    json_extract_string(payload, '$.webpage_url') as webpage_url,\n    json_extract_string(payload, '$.video_id') as video_id,\n    json_extract_string(payload, '$.title') as title,\n    json_extract_string(payload, '$.uploader') as uploader,\n    try_cast(json_extract_string(payload, '$.duration') as bigint) as duration_seconds,\n    json_extract_string(payload, '$.metadata_file') as metadata_file,\n    json_extract_string(payload, '$.media_file') as media_file,\n    json_extract_string(payload, '$.info_json_file') as info_json_file,\n    json_extract_string(payload, '$.run_dir') as run_dir,\n    json_extract_string(payload, '$.ytdlp_format') as ytdlp_format,\n    json_extract_string(payload, '$.selected_format_id') as selected_format_id,\n    json_extract_string(payload, '$.media_vcodec') as media_vcodec,\n    json_extract_string(payload, '$.media_acodec') as media_acodec,\n    try_cast(json_extract_string(payload, '$.media_width') as bigint) as media_width,\n    try_cast(json_extract_string(payload, '$.media_height') as bigint) as media_height,\n    try_cast(json_extract_string(payload, '$.download_exit_code') as integer) as download_exit_code,\n    json_extract_string(payload, '$.download_stdout_file') as download_stdout_file,\n    json_extract_string(payload, '$.download_stderr_file') as download_stderr_file,\n    json_extract_string(payload, '$.stderr_preview') as stderr_preview,\n    try_cast(json_extract_string(payload, '$.generated_at_epoch') as bigint) as generated_at_epoch,\n    shell_exit_code,\n    shell_duration_ms,\n    payload is not null as parsed_ok,\n    case\n      when payload is null then 'parse_failed'\n      when coalesce(try_cast(json_extract_string(payload, '$.ok') as boolean), false) then 'ok'\n      else coalesce(json_extract_string(payload, '$.status'), 'download_failed')\n    end as pipeline_status,\n    stdout_json as raw_stdout,\n    shell_stderr as raw_stderr\n  from parsed",
+          "loadSpatial": false
+        },
+        "schema": [
+          {
+            "name": "checked_at",
+            "type": "timestamp",
+            "nullable": true
+          },
+          {
+            "name": "result_row_number",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "download_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "download_status",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "download_enabled",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "video_url",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "webpage_url",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "video_id",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "title",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "uploader",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "duration_seconds",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "metadata_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "media_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "info_json_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "run_dir",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "ytdlp_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "selected_format_id",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "media_vcodec",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "media_acodec",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "media_width",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "media_height",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "download_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "download_stdout_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "download_stderr_file",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr_preview",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "generated_at_epoch",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "shell_exit_code",
+            "type": "int32",
+            "nullable": true
+          },
+          {
+            "name": "shell_duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "parsed_ok",
+            "type": "bool",
+            "nullable": true
+          },
+          {
+            "name": "pipeline_status",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "raw_stderr",
+            "type": "string",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "checked_at": "2026-06-25 15:02:56.089+02",
+            "result_row_number": 1,
+            "download_ok": true,
+            "download_status": "downloaded",
+            "download_enabled": true,
+            "video_url": "https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260",
+            "webpage_url": "https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260",
+            "video_id": "7650018533669162260",
+            "title": "No notes. Cosy modern farmhouse inspired ensuite. @McDonald Jones San...",
+            "uploader": "mychoicedesignstudio",
+            "duration_seconds": 17,
+            "metadata_file": "artifacts/tiktok/video_downloads/7650018533669162260/metadata.json",
+            "media_file": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/artifacts/tiktok/video_downloads/7650018533669162260/7650018533669162260.mp4",
+            "info_json_file": "artifacts/tiktok/video_downloads/7650018533669162260/7650018533669162260.info.json",
+            "run_dir": "artifacts/tiktok/video_downloads/7650018533669162260",
+            "ytdlp_format": "best[vcodec^=h264][ext=mp4]/best[vcodec!=none][ext=mp4]/best",
+            "selected_format_id": "h264_540p_456399-1",
+            "media_vcodec": "h264",
+            "media_acodec": "aac",
+            "media_width": 576,
+            "media_height": 1024,
+            "download_exit_code": 0,
+            "download_stdout_file": "artifacts/tiktok/video_downloads/7650018533669162260/download.stdout.txt",
+            "download_stderr_file": "artifacts/tiktok/video_downloads/7650018533669162260/download.stderr.txt",
+            "stderr_preview": "WARNING: [TikTok] The extractor is attempting impersonation, but no impersonate target is available. If you encounter errors, then see  https://github.com/yt-dlp/yt-dlp#impersonation  for information on installing the required dependencies ",
+            "generated_at_epoch": 1782392561,
+            "shell_exit_code": 0,
+            "shell_duration_ms": 14219,
+            "parsed_ok": true,
+            "pipeline_status": "ok",
+            "raw_stdout": "{\"ok\":true,\"status\":\"downloaded\",\"download_enabled\":true,\"video_url\":\"https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260\",\"webpage_url\":\"https://www.tiktok.com/@mychoicedesignstudio/video/7650018533669162260\",\"video_id\":\"7650018533669162260\",\"title\":\"No notes. Cosy modern farmhouse inspired ensuite. @McDonald Jones San...\",\"uploader\":\"mychoicedesignstudio\",\"duration\":17,\"metadata_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/metadata.json\",\"media_file\":\"/home/mncubel/rs-stitchly-v2/stitchly_workspace/artifacts/tiktok/video_downloads/7650018533669162260/7650018533669162260.mp4\",\"info_json_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/7650018533669162260.info.json\",\"run_dir\":\"artifacts/tiktok/video_downloads/7650018533669162260\",\"ytdlp_format\":\"best[vcodec^=h264][ext=mp4]/best[vcodec!=none][ext=mp4]/best\",\"selected_format_id\":\"h264_540p_456399-1\",\"media_vcodec\":\"h264\",\"media_acodec\":\"aac\",\"media_width\":576,\"media_height\":1024,\"download_exit_code\":0,\"download_stdout_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/download.stdout.txt\",\"download_stderr_file\":\"artifacts/tiktok/video_downloads/7650018533669162260/download.stderr.txt\",\"stderr_preview\":\"WARNING: [TikTok] The extractor is attempting impersonation, but no impersonate target is available. If you encounter errors, then see  https://github.com/yt-dlp/yt-dlp#impersonation  for information on installing the required dependencies \",\"generated_at_epoch\":1782392561}",
+            "raw_stderr": ""
+          },
+          {
+            "checked_at": "2026-06-25 15:02:56.089+02",
+            "result_row_number": 2,
+            "download_ok": true,
+            "download_status": "downloaded",
+            "download_enabled": true,
+            "video_url": "https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646",
+            "webpage_url": "https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646",
+            "video_id": "7639630310463802646",
+            "title": "#onthisday ",
+            "uploader": "crystalkitchenandbedroom",
+            "duration_seconds": 18,
+            "metadata_file": "artifacts/tiktok/video_downloads/7639630310463802646/metadata.json",
+            "media_file": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/artifacts/tiktok/video_downloads/7639630310463802646/7639630310463802646.mp4",
+            "info_json_file": "artifacts/tiktok/video_downloads/7639630310463802646/7639630310463802646.info.json",
+            "run_dir": "artifacts/tiktok/video_downloads/7639630310463802646",
+            "ytdlp_format": "best[vcodec^=h264][ext=mp4]/best[vcodec!=none][ext=mp4]/best",
+            "selected_format_id": "h264_540p_486444-1",
+            "media_vcodec": "h264",
+            "media_acodec": "aac",
+            "media_width": 576,
+            "media_height": 1024,
+            "download_exit_code": 0,
+            "download_stdout_file": "artifacts/tiktok/video_downloads/7639630310463802646/download.stdout.txt",
+            "download_stderr_file": "artifacts/tiktok/video_downloads/7639630310463802646/download.stderr.txt",
+            "stderr_preview": "WARNING: [TikTok] The extractor is attempting impersonation, but no impersonate target is available. If you encounter errors, then see  https://github.com/yt-dlp/yt-dlp#impersonation  for information on installing the required dependencies ",
+            "generated_at_epoch": 1782392567,
+            "shell_exit_code": 0,
+            "shell_duration_ms": 14219,
+            "parsed_ok": true,
+            "pipeline_status": "ok",
+            "raw_stdout": "{\"ok\":true,\"status\":\"downloaded\",\"download_enabled\":true,\"video_url\":\"https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646\",\"webpage_url\":\"https://www.tiktok.com/@crystalkitchenandbedroom/video/7639630310463802646\",\"video_id\":\"7639630310463802646\",\"title\":\"#onthisday \",\"uploader\":\"crystalkitchenandbedroom\",\"duration\":18,\"metadata_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/metadata.json\",\"media_file\":\"/home/mncubel/rs-stitchly-v2/stitchly_workspace/artifacts/tiktok/video_downloads/7639630310463802646/7639630310463802646.mp4\",\"info_json_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/7639630310463802646.info.json\",\"run_dir\":\"artifacts/tiktok/video_downloads/7639630310463802646\",\"ytdlp_format\":\"best[vcodec^=h264][ext=mp4]/best[vcodec!=none][ext=mp4]/best\",\"selected_format_id\":\"h264_540p_486444-1\",\"media_vcodec\":\"h264\",\"media_acodec\":\"aac\",\"media_width\":576,\"media_height\":1024,\"download_exit_code\":0,\"download_stdout_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/download.stdout.txt\",\"download_stderr_file\":\"artifacts/tiktok/video_downloads/7639630310463802646/download.stderr.txt\",\"stderr_preview\":\"WARNING: [TikTok] The extractor is attempting impersonation, but no impersonate target is available. If you encounter errors, then see  https://github.com/yt-dlp/yt-dlp#impersonation  for information on installing the required dependencies \",\"generated_at_epoch\":1782392567}",
+            "raw_stderr": ""
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 146
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "log_download_result",
+      "type": "transform",
+      "position": {
+        "x": 990,
+        "y": 40
+      },
+      "data": {
+        "label": "Log Download Result",
+        "componentId": "code.shell",
+        "properties": {
+          "language": "bash",
+          "code": "set -eu\n\nduckdb_bin=\"${DUCKLE_DUCKDB_BIN:-duckdb}\"\n\nprintf 'TikTok video download results:\\n'\n\"$duckdb_bin\" \"$DUCKLE_DUCKDB_DATABASE\" -c \"\n  select\n    result_row_number,\n    pipeline_status,\n    video_id,\n    media_file,\n    selected_format_id,\n    media_vcodec,\n    media_acodec\n  from \\\"$DUCKLE_INPUT_TABLE\\\"\n  order by result_row_number;\n\"\n\nexit 0",
+          "timeoutMs": 30000
+        },
+        "schema": [
+          {
+            "name": "stdout",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "stderr",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "exit_code",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "duration_ms",
+            "type": "int64",
+            "nullable": true
+          },
+          {
+            "name": "input_path",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_format",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_table",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "input_row_count",
+            "type": "int64",
+            "nullable": true
+          }
+        ],
+        "sampleRows": [
+          {
+            "stdout": "TikTok video download results:\n┌───────────────────┬─────────────────┬─────────────────────┬───┬────────────────────┬──────────────┬──────────────┐\n│ result_row_number │ pipeline_status │      video_id       │ … │ selected_format_id │ media_vcodec │ media_acodec │\n│       int64       │     varchar     │       varchar       │   │      varchar       │   varchar    │   varchar    │\n├───────────────────┼─────────────────┼─────────────────────┼───┼────────────────────┼──────────────┼──────────────┤\n│                 1 │ ok              │ 7650018533669162260 │ … │ h264_540p_456399-1 │ h264         │ aac          │\n│                 2 │ ok              │ 7639630310463802646 │ … │ h264_540p_486444-1 │ h264         │ aac          │\n├───────────────────┴─────────────────┴─────────────────────┴───┴────────────────────┴──────────────┴──────────────┤\n│ 2 rows                                                                                       7 columns (6 shown) │\n└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘\n",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 583,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-log_download_result-input-441465-33808643-ThreadId785.json",
+            "input_format": "jsonl",
+            "input_table": "parse_download_result",
+            "input_row_count": 2
+          }
+        ]
+      },
+      "measured": {
+        "width": 220,
+        "height": 150
+      },
+      "selected": false,
+      "dragging": false
+    },
+    {
+      "id": "write_download_manifest_parquet",
+      "type": "sink",
+      "position": {
+        "x": 990,
+        "y": 260
+      },
+      "data": {
+        "label": "Write Download Manifest Parquet",
+        "componentId": "snk.parquet",
+        "properties": {
+          "path": "artifacts/tiktok/video_download_manifest/data.parquet",
+          "compression": "ZSTD",
+          "rowGroupSize": 100000
+        }
+      },
+      "measured": {
+        "width": 278,
+        "height": 170
+      },
+      "selected": false,
+      "dragging": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_video_download_config_download_tiktok_video",
+      "source": "video_download_config",
+      "sourceHandle": "main",
+      "target": "download_tiktok_video",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_download_tiktok_video_parse_download_result",
+      "source": "download_tiktok_video",
+      "sourceHandle": "main",
+      "target": "parse_download_result",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_parse_download_result_log_download_result",
+      "source": "parse_download_result",
+      "sourceHandle": "main",
+      "target": "log_download_result",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    },
+    {
+      "id": "e_parse_download_result_write_download_manifest_parquet",
+      "source": "parse_download_result",
+      "sourceHandle": "main",
+      "target": "write_download_manifest_parquet",
+      "targetHandle": "main",
+      "type": "duckle",
+      "data": {
+        "connectionType": "main"
+      }
+    }
+  ]
+}

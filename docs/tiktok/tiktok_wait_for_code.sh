@@ -34,6 +34,12 @@ while [ "$(date +%s)" -le "$deadline" ]; do
     --data-urlencode "consume=true" \
     -o "$response"
 
+  if ! jq empty "$response" >/dev/null 2>&1; then
+    echo "callback code endpoint did not return JSON: $TIKTOK_CALLBACK_CODE_URL" >&2
+    cat "$response" >&2
+    exit 1
+  fi
+
   if jq -e '.code and (.code | length > 0)' "$response" >/dev/null 2>&1; then
     jq -r '.code' "$response" > "$code_file"
     chmod 600 "$code_file"

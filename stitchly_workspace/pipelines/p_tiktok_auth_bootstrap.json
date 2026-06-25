@@ -123,11 +123,11 @@
         ],
         "sampleRows": [
           {
-            "stdout": "{\"ok\":true,\"make_url_exit_code\":0,\"auth_url\":\"https://www.tiktok.com/v2/auth/authorize/?client_key=sbaw8u3zkwjp5qvpcz&response_type=code&scope=user.info.basic%2Cvideo.list&redirect_uri=https%3A%2F%2Fthreadback.vercel.app%2Fapi%2Fcallback&state=0fed089c55f2b49585ed6753cd49522b\",\"state\":\"0fed089c55f2b49585ed6753cd49522b\",\"tiktok_root\":\"../docs/tiktok\",\"env_file\":\"../docs/tiktok/.env.tiktok\",\"out_dir\":\".stitchly/secrets/tiktok\",\"token_file\":\".stitchly/secrets/tiktok/tiktok_tokens.json\",\"wait_timeout_seconds\":180,\"wrapper_stdout_file\":\".stitchly/secrets/tiktok/auth_make_url.wrapper.stdout.txt\",\"wrapper_stderr_file\":\".stitchly/secrets/tiktok/auth_make_url.wrapper.stderr.txt\"}\n",
+            "stdout": "{\"ok\":true,\"make_url_exit_code\":0,\"auth_url\":\"https://www.tiktok.com/v2/auth/authorize/?client_key=sbaw8u3zkwjp5qvpcz&response_type=code&scope=user.info.basic%2Cvideo.list&redirect_uri=https%3A%2F%2Fthreadback.vercel.app%2Fapi%2Fcallback&state=a4deb50b60ef7bcaed8af6d7228a4b09\",\"state\":\"a4deb50b60ef7bcaed8af6d7228a4b09\",\"tiktok_root\":\"../docs/tiktok\",\"env_file\":\"../docs/tiktok/.env.tiktok\",\"out_dir\":\".stitchly/secrets/tiktok\",\"token_file\":\".stitchly/secrets/tiktok/tiktok_tokens.json\",\"wait_timeout_seconds\":180,\"wrapper_stdout_file\":\".stitchly/secrets/tiktok/auth_make_url.wrapper.stdout.txt\",\"wrapper_stderr_file\":\".stitchly/secrets/tiktok/auth_make_url.wrapper.stderr.txt\"}\n",
             "stderr": "",
             "exit_code": 0,
-            "duration_ms": 1828,
-            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-make_auth_url-input-441465-912883771-ThreadId452.json",
+            "duration_ms": 1726,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-make_auth_url-input-441465-221978710-ThreadId623.json",
             "input_format": "jsonl",
             "input_table": "auth_config",
             "input_row_count": 1
@@ -200,11 +200,11 @@
         ],
         "sampleRows": [
           {
-            "stdout": "{\n  \"ok\": true,\n  \"bootstrap_exit_code\": 0,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"out_dir\": \".stitchly/secrets/tiktok\",\n  \"auth_status_file\": \".stitchly/secrets/tiktok/auth_bootstrap_status.json\",\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt\",\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 86400,\n    \"refresh_token_seconds_remaining\": 31536000\n  },\n  \"stdout_preview\": \"Waiting for OAuth code for state: 0fed089c55f2b49585ed6753cd49522b\\nPolling: https://threadback.vercel.app/api/code\\nReceived code: .stitchly/secrets/tiktok/oauth_callback_code.txt\\nSaved token file: .stitchly/secrets/tiktok/tiktok_tokens.json\\nSaved token env: .stitchly/secrets/tiktok/tiktok_tokens.env\",\n  \"stderr_preview\": \"\"\n}\n",
+            "stdout": "{\n  \"ok\": false,\n  \"bootstrap_exit_code\": 1,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"out_dir\": \".stitchly/secrets/tiktok\",\n  \"auth_status_file\": \".stitchly/secrets/tiktok/auth_bootstrap_status.json\",\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt\",\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 36737,\n    \"refresh_token_seconds_remaining\": 31486337\n  },\n  \"stdout_preview\": \"Waiting for OAuth code for state: a4deb50b60ef7bcaed8af6d7228a4b09\\nPolling: https://threadback.vercel.app/api/code\",\n  \"stderr_preview\": \"timed out waiting for OAuth code after 180s\"\n}\n",
             "stderr": "",
             "exit_code": 0,
-            "duration_ms": 30784,
-            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-wait_and_exchange_auth-input-441465-293487539-ThreadId452.json",
+            "duration_ms": 182769,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-wait_and_exchange_auth-input-441465-525891421-ThreadId623.json",
             "input_format": "jsonl",
             "input_table": "make_auth_url",
             "input_row_count": 1
@@ -215,7 +215,7 @@
         "width": 220,
         "height": 150
       },
-      "selected": true,
+      "selected": false,
       "dragging": false
     },
     {
@@ -341,26 +341,26 @@
         ],
         "sampleRows": [
           {
-            "checked_at": "2026-06-24 23:20:57.937+02",
-            "auth_bootstrap_ok": true,
-            "bootstrap_exit_code": 0,
+            "checked_at": "2026-06-25 13:08:41.178+02",
+            "auth_bootstrap_ok": false,
+            "bootstrap_exit_code": 1,
             "shell_exit_code": 0,
-            "shell_duration_ms": 30784,
+            "shell_duration_ms": 182769,
             "token_file": ".stitchly/secrets/tiktok/tiktok_tokens.json",
             "out_dir": ".stitchly/secrets/tiktok",
             "auth_status_file": ".stitchly/secrets/tiktok/auth_bootstrap_status.json",
-            "access_token_seconds_remaining": 86400,
-            "refresh_token_seconds_remaining": 31536000,
+            "access_token_seconds_remaining": 36737,
+            "refresh_token_seconds_remaining": 31486337,
             "has_access_token": true,
             "has_refresh_token": true,
             "open_id_present": true,
             "wrapper_stdout_file": ".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt",
             "wrapper_stderr_file": ".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt",
-            "stdout_preview": "Waiting for OAuth code for state: 0fed089c55f2b49585ed6753cd49522b\nPolling: https://threadback.vercel.app/api/code\nReceived code: .stitchly/secrets/tiktok/oauth_callback_code.txt\nSaved token file: .stitchly/secrets/tiktok/tiktok_tokens.json\nSaved token env: .stitchly/secrets/tiktok/tiktok_tokens.env",
-            "stderr_preview": "",
+            "stdout_preview": "Waiting for OAuth code for state: a4deb50b60ef7bcaed8af6d7228a4b09\nPolling: https://threadback.vercel.app/api/code",
+            "stderr_preview": "timed out waiting for OAuth code after 180s",
             "parsed_ok": true,
-            "auth_bootstrap_status": "ok",
-            "raw_stdout": "{\n  \"ok\": true,\n  \"bootstrap_exit_code\": 0,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"out_dir\": \".stitchly/secrets/tiktok\",\n  \"auth_status_file\": \".stitchly/secrets/tiktok/auth_bootstrap_status.json\",\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt\",\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 86400,\n    \"refresh_token_seconds_remaining\": 31536000\n  },\n  \"stdout_preview\": \"Waiting for OAuth code for state: 0fed089c55f2b49585ed6753cd49522b\\nPolling: https://threadback.vercel.app/api/code\\nReceived code: .stitchly/secrets/tiktok/oauth_callback_code.txt\\nSaved token file: .stitchly/secrets/tiktok/tiktok_tokens.json\\nSaved token env: .stitchly/secrets/tiktok/tiktok_tokens.env\",\n  \"stderr_preview\": \"\"\n}\n",
+            "auth_bootstrap_status": "auth_bootstrap_failed",
+            "raw_stdout": "{\n  \"ok\": false,\n  \"bootstrap_exit_code\": 1,\n  \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n  \"out_dir\": \".stitchly/secrets/tiktok\",\n  \"auth_status_file\": \".stitchly/secrets/tiktok/auth_bootstrap_status.json\",\n  \"wrapper_stdout_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stdout.txt\",\n  \"wrapper_stderr_file\": \".stitchly/secrets/tiktok/auth_wait_exchange.wrapper.stderr.txt\",\n  \"auth_status\": {\n    \"token_file\": \".stitchly/secrets/tiktok/tiktok_tokens.json\",\n    \"has_access_token\": true,\n    \"has_refresh_token\": true,\n    \"open_id_present\": true,\n    \"scope\": \"user.info.basic,video.list\",\n    \"saved_at_epoch\": 1782336057,\n    \"access_token_expires_at_epoch\": 1782422457,\n    \"refresh_token_expires_at_epoch\": 1813872057,\n    \"access_token_seconds_remaining\": 36737,\n    \"refresh_token_seconds_remaining\": 31486337\n  },\n  \"stdout_preview\": \"Waiting for OAuth code for state: a4deb50b60ef7bcaed8af6d7228a4b09\\nPolling: https://threadback.vercel.app/api/code\",\n  \"stderr_preview\": \"timed out waiting for OAuth code after 180s\"\n}\n",
             "raw_stderr": ""
           }
         ]
@@ -431,11 +431,11 @@
         ],
         "sampleRows": [
           {
-            "stdout": "TikTok auth bootstrap OK: token_file=.stitchly/secrets/tiktok/tiktok_tokens.json access_token_seconds_remaining=86400 refresh_token_seconds_remaining=31536000\n",
+            "stdout": "TikTok auth bootstrap FAILED: status=auth_bootstrap_failed exit_code=1 token_file=.stitchly/secrets/tiktok/tiktok_tokens.json\nstdout_preview:\nWaiting for OAuth code for state: a4deb50b60ef7bcaed8af6d7228a4b09\nPolling: https://threadback.vercel.app/api/code\nstderr_preview:\ntimed out waiting for OAuth code after 180s\n",
             "stderr": "",
             "exit_code": 0,
-            "duration_ms": 2326,
-            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-log_auth_bootstrap_result-input-441465-851426251-ThreadId452.json",
+            "duration_ms": 2485,
+            "input_path": "/home/mncubel/rs-stitchly-v2/stitchly_workspace/.stitchly/tmp/runtime/duckle-rest-log_auth_bootstrap_result-input-441465-121142031-ThreadId623.json",
             "input_format": "jsonl",
             "input_table": "parse_auth_bootstrap_result",
             "input_row_count": 1

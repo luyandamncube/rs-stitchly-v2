@@ -102,13 +102,19 @@ jq -s \
     },
     auth_status: ($auth_status[0] // {}),
     user_info_summary: {
-      ok: ((first($steps[] | select(.name == "user_info_probe") | .status) == "ok") and (($user_info[0].error // null) == null)),
+      ok: (
+        (first($steps[] | select(.name == "user_info_probe") | .status) == "ok")
+        and (($user_info[0].error // null) == null or (($user_info[0].error.code // "") == "ok"))
+      ),
       open_id_present: (($user_info[0].data.user.open_id // "") != ""),
       display_name_present: (($user_info[0].data.user.display_name // "") != ""),
       error: ($user_info[0].error // null)
     },
     video_list_summary: {
-      ok: ((first($steps[] | select(.name == "video_list_probe") | .status) == "ok") and (($video_list[0].error // null) == null)),
+      ok: (
+        (first($steps[] | select(.name == "video_list_probe") | .status) == "ok")
+        and (($video_list[0].error // null) == null or (($video_list[0].error.code // "") == "ok"))
+      ),
       video_count: (($video_list[0].data.videos // []) | length),
       has_cursor: (($video_list[0].data.cursor // null) != null),
       has_more: ($video_list[0].data.has_more // null),
